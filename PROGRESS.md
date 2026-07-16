@@ -5,6 +5,36 @@ without pointing to the test, log, or artifact that proves it.
 
 ---
 
+## 2026-07-16 13:45 UTC — Pilot verdict; upstream Marlin MoE bug isolated (P0.10); full run launched
+
+**Status:** full 512×2048 run in progress
+
+**Pilot results (32×512, §13):**
+- Stage 5: 26.7 min, 1632/1632 tensors NVFP4 (1610 GPTQ + 22 RTN for
+  never-activated experts, all recorded); collection peak **41.4 GB** (P0.4
+  proof at 20B scale); zero silent fallbacks.
+- Stage 7: all 96 linears + 1536 expert slices packed, 1632/1632 artifacts
+  re-verified bit-exact; **13 GB packed vs 39 GB BF16 (3.0×)**.
+- QDQ model generates coherent, correct text (greedy references saved).
+- vLLM gates: **linears-only hybrid passes** (deterministic, Harmony chat OK,
+  greedy agreement 0.90 vs QDQ). **Full-NVFP4 pack fails** — MoE outputs
+  ~1e33 → uniform logits.
+
+**P0.10 isolation (3 h of controlled bisection, 9 fixture configurations):**
+value-independent, dim-triggered upstream bug in vLLM 0.25.1's Marlin
+NVFP4-MoE at exactly (E=32, N=K=2880); every other tested combination —
+including (E=8, 2880²) and (E=32, 1024²) — agrees with its QDQ reference,
+often exactly. Emulation backend rejects bias; Humming's JIT fails here;
+no newer vLLM exists. Full evidence + repro checkpoints in KNOWN_ISSUES
+P0.10. Plugin v0.2 landed real fixes along the way (bias kernel-format
+conversion, de-interleave + swigluoai_uninterleave, verified on fixtures).
+
+**Decision D-013:** proceed — quality science (B/C/D) on QDQ in transformers;
+serving on A (native MXFP4), B (BF16), D-hybrid (labeled); full-NVFP4
+serving reported as blocked-by-upstream with repros.
+
+---
+
 ## 2026-07-16 10:45 UTC — Arm B built + validated; pilot running
 
 **Status:** in progress (pilot stage 5 collection ~40% at time of writing)
