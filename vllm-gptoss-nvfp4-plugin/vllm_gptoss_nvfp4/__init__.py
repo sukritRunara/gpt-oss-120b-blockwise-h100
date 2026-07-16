@@ -251,6 +251,87 @@ def _patch_bias_kernel_format():
         process_weights_after_loading
 
 
+def _patch_topk_weight_multiply():
+    """P5: bypass the broken mul_topk_weights path in moe_wna16_marlin_gemm.
+
+    Isolated with a standalone capture/replay harness against an exact
+    reference: the SAME weights and schedule produce correct output with
+    mul_topk_weights=False and fully corrupt output (~1e33, consistent with
+    an out-of-bounds fp32 multiplier read) with mul_topk_weights=True at
+    gpt-oss's shapes — across every thread config, block size, and reduce
+    mode. Small shapes are unaffected (allocation-layout-dependent OOB).
+
+    Workaround: call the gemm with mul_topk_weights=False and apply the
+    routing weights as an elementwise multiply on the [M*topk, K] gemm2
+    output — mathematically identical, negligible cost.
+
+    Scope guard: only rewrites calls where the stock wrapper would have set
+    mul_topk_weights=True for gemm2 (apply_router_weight_on_input=False,
+    the gpt-oss configuration). The gemm1 mul path
+    (apply_router_weight_on_input=True) is left untouched.
+    """
+    import torch
+    import vllm.model_executor.layers.fused_moe.experts.marlin_moe as mm
+
+    orig_gemm = mm.ops.moe_wna16_marlin_gemm
+    orig_fused = mm._fused_marlin_moe
+
+    def _fused_marlin_moe(hidden_states, w1, w2, bias1, bias2, w1_scale,
+                          w2_scale, topk_weights, num_topk, quant_type,
+                          apply_router_weight_on_input, expert_map,
+                          block_size_m, sorted_token_ids, expert_ids,
+                          num_tokens_post_padded, activation=None, **kw):
+        if apply_router_weight_on_input:
+            # gemm1 would carry the multiply — configuration not used by
+            # gpt-oss; leave stock behavior.
+            return orig_fused(hidden_states, w1, w2, bias1, bias2, w1_scale,
+                              w2_scale, topk_weights, num_topk, quant_type,
+                              apply_router_weight_on_input, expert_map,
+                              block_size_m, sorted_token_ids, expert_ids,
+                              num_tokens_post_padded, activation=activation,
+                              **kw)
+
+        # Intercept the second gemm (top_k == 1 in the stock wrapper) and
+        # strip the in-kernel multiply; everything else passes through.
+        def gemm_shim(a, c, b_q_weight, b_bias, b_scales, a_scales,
+                      global_scale, b_zeros, g_idx, perm, workspace,
+                      sorted_ids, expert_ids_, num_tokens_past_padded_,
+                      topk_weights_, moe_block_size, top_k,
+                      mul_topk_weights, b_q_type, size_m, size_n, size_k,
+                      is_k_full, use_atomic_add, use_fp32_reduce,
+                      is_zp_float):
+            do_external_mul = mul_topk_weights and top_k == 1
+            out = orig_gemm(a, c, b_q_weight, b_bias, b_scales, a_scales,
+                            global_scale, b_zeros, g_idx, perm, workspace,
+                            sorted_ids, expert_ids_, num_tokens_past_padded_,
+                            topk_weights_, moe_block_size=moe_block_size,
+                            top_k=top_k,
+                            mul_topk_weights=(False if do_external_mul
+                                              else mul_topk_weights),
+                            b_q_type=b_q_type, size_m=size_m, size_n=size_n,
+                            size_k=size_k, is_k_full=is_k_full,
+                            use_atomic_add=use_atomic_add,
+                            use_fp32_reduce=use_fp32_reduce,
+                            is_zp_float=is_zp_float)
+            if do_external_mul:
+                # rows are per (token, topk-slot); weights broadcast per row
+                out.mul_(topk_weights_.reshape(-1, 1).to(out.dtype))
+            return out
+
+        mm.ops.moe_wna16_marlin_gemm = gemm_shim
+        try:
+            return orig_fused(hidden_states, w1, w2, bias1, bias2, w1_scale,
+                              w2_scale, topk_weights, num_topk, quant_type,
+                              apply_router_weight_on_input, expert_map,
+                              block_size_m, sorted_token_ids, expert_ids,
+                              num_tokens_post_padded, activation=activation,
+                              **kw)
+        finally:
+            mm.ops.moe_wna16_marlin_gemm = orig_gemm
+
+    mm._fused_marlin_moe = _fused_marlin_moe
+
+
 def register():
     """vllm.general_plugins entry point — runs in every vLLM process."""
     try:
@@ -258,6 +339,7 @@ def register():
         _patch_quant_config()
         _patch_gptoss_loader()
         _patch_bias_kernel_format()
+        _patch_topk_weight_multiply()
         logger.info("[gptoss-nvfp4] vLLM GPT-OSS NVFP4 patches applied")
     except Exception:                                     # noqa: BLE001
         logger.exception("[gptoss-nvfp4] failed to apply patches")
