@@ -56,11 +56,9 @@ from pathlib import Path
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
 _REPO_ROOT  = Path(__file__).resolve().parents[1]
-_CODE_ROOT  = Path(
-    "/home/runara_dgx_spark_1/Itamar/projects"
-    "/Block-wise-GPTQ-GPT-OSS-20B-NVFP4"
-    "/opteam-blockwise-gptq"
-)
+# Repo-relative code root (P0.1 fix): the library lives at
+# <repo>/opteam-blockwise-gptq regardless of where the repo is checked out.
+_CODE_ROOT = Path(__file__).resolve().parents[1] / "opteam-blockwise-gptq"
 
 if not _CODE_ROOT.exists():
     raise RuntimeError(f"Code root not found: {_CODE_ROOT}")
