@@ -232,7 +232,7 @@ def eval_perplexity(model, tokenizer, texts, seq_len, max_tokens=None, label="")
 def load_wikitext2_fallback():
     from datasets import load_dataset
     print("  Streaming WikiText-2 test split...", flush=True)
-    ds = load_dataset("wikitext", "wikitext-2-raw-v1",
+    ds = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1",
                       split="test", trust_remote_code=False)
     return ds["text"]
 

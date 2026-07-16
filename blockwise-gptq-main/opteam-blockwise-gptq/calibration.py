@@ -29,7 +29,7 @@ def get_calibration_data(model_name, dataset="wikitext2", nsamples=128, seqlen=2
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
 
     if dataset == "wikitext2":
-        data = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
+        data = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", split="train")
         text = "\n\n".join(data["text"])
     elif dataset == "c4":
         data = load_dataset(
