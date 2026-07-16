@@ -5,6 +5,53 @@ without pointing to the test, log, or artifact that proves it.
 
 ---
 
+## 2026-07-16 07:05 UTC — §22 first actions: branch, recon, static P0 audit, env bootstrap
+
+**Status:** audit complete; env bootstrap in progress
+
+**Goal:** Execute handoff §22 items 1–7: recon snapshot, working branch, static audit
+of all 9 documented P0 issues against the real source, environment scaffolding.
+
+**Commands:**
+- Recon (`pwd`, tree, `git`, `nvidia-smi`, `df`, `free`) → `logs/setup/recon_20260716.log`
+- `git switch -c h100-gpt-oss-20b-nvfp4` + pushed to origin
+- Read/grepped all core sources: `apply.py`, `gptq.py`, `quantizer.py`,
+  `expert_dispatch.py`, `gpt_oss_expert_gptq.py`, `model_utils.py`,
+  `stage5_quantize_model.py`, `stage7_save_modelopt.py`, `stage8_benchmark_*.py`
+- `scripts/bootstrap_quant_env.sh` / `bootstrap_serve_env.sh` (running,
+  logs in `logs/setup/bootstrap_{quant,serve}.log`)
+
+**Results — audit (all 9 P0s verified with file/line evidence in KNOWN_ISSUES.md):**
+- P0.1 confirmed: hard-coded DGX `_CODE_ROOT` + RuntimeError guard in 10 files —
+  nothing under `tests/` imports on this pod.
+- P0.2 version-dependent: expert patch assumes *dense* `routing_weights
+  [tokens, num_experts]`; crashes/mis-weights for the top-k-only Transformers variant.
+- P0.3 confirmed mathematically: `_GptqH` weights batches `n/N²` vs `GPTQ.add_batch`
+  invariant `2/N` — later calibration batches systematically underweighted.
+- P0.4 confirmed: ~51 GB expert Hessians allocated **on GPU** during single-pass
+  collection + ~42 GB model > 80 GB H100. Cache is written only after the pass.
+- P0.5 confirmed: stage5 JSON has no `quantized_attn_keys`/`layer_losses`;
+  stage7 requires them.
+- P0.6 confirmed: `pack_nvfp4` re-derives scales from QDQ weights (independent second
+  quantization → packed ≠ GPTQ-optimized).
+- P0.7 confirmed: packing iterates `nn.Linear` only → GPT-OSS batched experts can never
+  pack; missing manifest triggers fail-open "pack everything".
+- P0.8 confirmed: `weight_scale_2=1.0` Marlin assumption unverified; shared-scale
+  computation dead code.
+- P0.9 confirmed: TTFT = offline `generate(max_tokens=1)`; no server/concurrency.
+
+**Files changed:**
+- `KNOWN_ISSUES.md` — all 9 P0s moved from "unverified" to confirmed with evidence
+- `envs/{quant,serve}-requirements.in`, `scripts/bootstrap_{quant,serve}_env.sh`,
+  `scripts/capture_system_manifest.sh` — new
+
+**Next:** Freeze lockfiles + system manifest when installs finish; then P0.1 path fix
+(smallest, unblocks all tests) → P0.2/P0.3 with tests.
+
+**Blockers:** none.
+
+---
+
 ## 2026-07-16 06:42 UTC — Repo bootstrap and project scaffolding
 
 **Status:** complete
