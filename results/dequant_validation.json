@@ -1,0 +1,32 @@
+{
+  "checks": {
+    "structure": {
+      "pass": true,
+      "detail": "411 tensors, 20.915B params, all finite BF16/FP32, no packed tensors, config clean"
+    },
+    "decode": {
+      "pass": true,
+      "detail": "48 expert tensors decode-exact, 363 tensors byte-identical, full coverage"
+    },
+    "determinism": {
+      "pass": true,
+      "detail": "repeated forward is bitwise-identical"
+    },
+    "logits_a_vs_b": {
+      "pass": true,
+      "detail": "cos_min=0.99998 kl_max=0.0000 top1=1.00 prefix=1.00 (A AUTO-DEQUANTIZED \u2014 weak check)"
+    }
+  },
+  "created_utc": "2026-07-16T10:18:52Z",
+  "metrics_a_vs_b": {
+    "a_native_mxfp4": false,
+    "cosine_mean": 0.9999859221279621,
+    "cosine_min": 0.9999819993972778,
+    "kl_mean": 0.0,
+    "kl_max": 0.0,
+    "top1_agreement": 1.0,
+    "top10_overlap_mean": 1.0,
+    "max_abs_logit_diff": 0.0,
+    "greedy32_prefix_agreement": 1.0
+  }
+}

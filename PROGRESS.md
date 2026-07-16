@@ -5,6 +5,36 @@ without pointing to the test, log, or artifact that proves it.
 
 ---
 
+## 2026-07-16 10:45 UTC — Arm B built + validated; pilot running
+
+**Status:** in progress (pilot stage 5 collection ~40% at time of writing)
+
+**Arm B (gpt-oss-20b-mxfp4-dequant-bf16):** 39.0 GB, 20.915B params.
+- Built by `scripts/dequantize_gpt_oss_20b.py` via the pinned transformers
+  `Mxfp4Config(dequantize=True)`. Found + worked around a transformers 5.14
+  save bug: `save_pretrained` → `revert_weight_conversion()` silently DROPS
+  dequantized expert weights (first attempt produced a 4.9 GB checkpoint
+  without experts). Manual sharded save + parameter-count fail-closed check;
+  pitfall documented in docs/DEQUANTIZATION_PROVENANCE.md.
+- Validation `scripts/validate_dequantized_source.py`: **PASS** —
+  structure clean; **all 48 expert tensors decode bit-exact** from A's
+  MXFP4 blocks/scales; all 363 other tensors byte-identical; full two-way
+  coverage; deterministic forwards; A-vs-B logits identical (A was
+  auto-dequantized by transformers → weak check, native-A comparison
+  deferred to vLLM). `results/dequant_validation.json`.
+
+**Pilot (§13) in flight** — `scripts/run_pilot.sh`, logs under
+`logs/quantization/pilot_*`. Real-model P0.4 evidence already visible:
+collection GPU peak **41.4 GB** (vs ~93 GB for the old design → OOM),
+~14 s per layer-group pass, 2.18 GB cache per layer.
+
+**Also landed:** serving benchmark harness (P0.9 implementation),
+per-arm vLLM launchers/configs, matched-RTN builder (arm C),
+logit/task quality eval scripts, full-run script (gated on pilot),
+docs (ARCHITECTURE, EXPERIMENT_DESIGN, DEQUANTIZATION_PROVENANCE).
+
+---
+
 ## 2026-07-16 10:05 UTC — P0.7 + P0.8 resolved: full-NVFP4 GPT-OSS proven loadable in vLLM
 
 **Status:** complete
