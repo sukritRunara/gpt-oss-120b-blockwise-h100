@@ -1,0 +1,22 @@
+{
+  "stage": "4_baseline",
+  "model": "gpt-oss-20b-mxfp4-dequant-bf16",
+  "model_path": "/workspace/models/gpt-oss-20b-mxfp4-dequant-bf16",
+  "dtype": "bfloat16",
+  "seq_len": 2048,
+  "timestamp": "2026-07-16T15:12:08.383977+00:00",
+  "wikitext2": {
+    "ppl": 227.083787,
+    "avg_nll": 5.425319,
+    "n_tokens": 286720,
+    "n_windows": 140,
+    "elapsed_s": 33.55
+  },
+  "c4": {
+    "ppl": 711.289104,
+    "avg_nll": 6.567079,
+    "n_tokens": 131072,
+    "n_windows": 64,
+    "elapsed_s": 13.3
+  }
+}

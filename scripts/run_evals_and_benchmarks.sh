@@ -17,14 +17,24 @@ D=$ROOT/models/gpt-oss-20b-mxfp4-dequant-blockwise-gptq-nvfp4
 export HF_HOME=$ROOT/cache/huggingface
 export HF_DATASETS_CACHE=$ROOT/cache/datasets
 
+BASE_JSON=$REPO/results/stage4_gpt-oss-20b-mxfp4-dequant-bf16_baseline.json
+WT2=$REPO/results/stage4_gpt-oss-20b-mxfp4-dequant-bf16_wikitext2_samples.json
+C4S=$REPO/results/stage4_gpt-oss-20b-mxfp4-dequant-bf16_c4_samples.json
+
 echo "=== [eval 1/6] Perplexity baseline (B) ==="
-$QP $REPO/tests/stage4_baseline_perplexity.py --model_path "$B" \
-    2>&1 | tee "$LOGS/benchmarks/stage4_B.log" | tail -6
+if [ -f "$BASE_JSON" ]; then
+    echo "baseline exists — skipping stage 4"
+else
+    $QP $REPO/tests/stage4_baseline_perplexity.py --model_path "$B" \
+        2>&1 | tee "$LOGS/benchmarks/stage4_B.log" | tail -6
+fi
 
 echo "=== [eval 2/6] Perplexity C and D (same cached tokens) ==="
 $QP $REPO/tests/stage6_eval_perplexity.py --model_path "$D" \
+    --baseline "$BASE_JSON" --wt2_samples "$WT2" --c4_samples "$C4S" \
     2>&1 | tee "$LOGS/benchmarks/stage6_D.log" | tail -6
 $QP $REPO/tests/stage6_eval_perplexity.py --model_path "$C" \
+    --baseline "$BASE_JSON" --wt2_samples "$WT2" --c4_samples "$C4S" \
     2>&1 | tee "$LOGS/benchmarks/stage6_C.log" | tail -6
 
 echo "=== [eval 3/6] Logit-level paired metrics (B ref, C and D) ==="
