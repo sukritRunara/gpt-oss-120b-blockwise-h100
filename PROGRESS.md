@@ -5,9 +5,47 @@ without pointing to the test, log, or artifact that proves it.
 
 ---
 
+## 2026-07-16 07:12 UTC — Environments frozen; P0.1 path fix landed and verified
+
+**Status:** complete
+
+**Goal:** Finish §22 items 5–7: both environments bootstrapped with lockfiles, system
+manifest frozen, hard-coded paths repaired and proven portable.
+
+**Commands:**
+- `scripts/bootstrap_quant_env.sh` → `.venv-quant` (log: `logs/setup/bootstrap_quant.log`)
+- `scripts/bootstrap_serve_env.sh` → `.venv-serve` (log: `logs/setup/bootstrap_serve.log`)
+- `scripts/capture_system_manifest.sh` → `envs/system-manifest.txt`
+- Stage 1–3 CPU tests run **from outside the repo root** (P0.1 portability proof):
+  - `stage1_nvfp4_unit_tests.py` → 5/5 PASS (`logs/tests/stage1_20260716.log`)
+  - `stage2_nvfp4_algorithm_tests.py` → 7/7 PASS (`logs/tests/stage2_20260716.log`)
+  - `stage3_gpt_oss_shape_tests.py` → 6/6 PASS (`logs/tests/stage3_gpt_oss_20260716.log`)
+- `grep -rn "runara_dgx|/home/"` → zero hits
+
+**Environment (frozen in envs/*.lock.txt + system-manifest.txt):**
+- `.venv-quant`: torch 2.13.0+cu130, transformers 5.14.0, datasets 5.0.0,
+  safetensors 0.8.0, accelerate 1.14.0, kernels 0.16.0, triton 3.7.1
+- `.venv-serve`: vllm 0.25.1, torch 2.11.0+cu130, transformers 5.14.0,
+  flashinfer 0.6.13 — note the torch version differs from .venv-quant,
+  which is exactly why two isolated environments are mandatory.
+
+**Files changed:**
+- 10 × `tests/**.py` — `_CODE_ROOT` now `Path(__file__).resolve().parents[N] / "opteam-blockwise-gptq"`
+- `tests/internalTests/test_vLLM_deploy_quantized_model.py` — hard-coded MODEL path →
+  required `--model` CLI arg
+- `envs/{quant,serve}-requirements.lock.txt`, `envs/system-manifest.txt` — new
+
+**Next:** P0.2 — inspect installed transformers 5.14.0 `GptOssExperts.forward`, pin the
+routing contract, write the routing test battery, fix the expert patch. Then P0.3
+(canonical Hessian accumulator + equivalence tests).
+
+**Blockers:** none.
+
+---
+
 ## 2026-07-16 07:05 UTC — §22 first actions: branch, recon, static P0 audit, env bootstrap
 
-**Status:** audit complete; env bootstrap in progress
+**Status:** complete (see follow-up entry above for env results)
 
 **Goal:** Execute handoff §22 items 1–7: recon snapshot, working branch, static audit
 of all 9 documented P0 issues against the real source, environment scaffolding.
