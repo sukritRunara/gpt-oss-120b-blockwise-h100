@@ -185,6 +185,21 @@ a no-op for other models/checkpoints. All three gaps are upstream-issue candidat
 
 ---
 
+## D-012 — Full-run Hessian collection uses layer group size 4
+
+**Decision:** The pilot ran with `--hessian_layer_group_size 1` (the mandated
+starting point) and measured, on the real 20B model: GPU peak 41.4 GB with one
+group resident, accumulators ≈ 2.18 GB per layer. The full 512×2048 run uses
+group size 4: projected peak ≈ 48 GB (≈ 32 GB headroom on 80 GB), cutting
+collection from 24 full-model passes to 6 (~3 h → ~45 min at full-run sample
+counts).
+
+**Why:** The handoff permits raising the group size only after measuring
+headroom — measured above. Grouping is proven bitwise-equivalent to group=1
+(test_group1_equals_group_all), so this is purely a wall-clock trade.
+
+---
+
 <!-- Pending decisions to record as work proceeds (handoff §9):
   - Whether mixed-precision BF16 fallback is retained, and which tensors are excluded.
 -->

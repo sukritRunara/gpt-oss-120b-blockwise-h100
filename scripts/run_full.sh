@@ -32,7 +32,7 @@ $QP $REPO/tests/stage5_quantize_model.py \
     --blocksize 128 --percdamp 0.01 \
     --mixed_precision_threshold 0 \
     --hessian_cache_dir "$ROOT/cache/hessians-full" \
-    --hessian_layer_group_size 1 \
+    --hessian_layer_group_size 4 \
     --results "$RES/stage5_full.json" \
     2>&1 | tee "$LOGS/full_stage5.log" | grep -E "^\[GPTQ\]|Manifest|Total|Saved|Results" | tail -30
 
