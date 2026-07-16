@@ -198,6 +198,34 @@ class MoEHandler:
         """Set H=None on all accumulators to release GPU/CPU RAM after quantisation."""
         pass
 
+    # ── optional overrides (implementation-consistent collection, P0.4) ───────
+
+    def attach_passthrough(self, layer) -> Any:
+        """Pin this layer's expert forward to the SAME implementation the
+        Hessian-collection patch uses, WITHOUT collecting anything.
+
+        Why: transformers >= 5.x dispatches MoE expert forwards through
+        `use_experts_implementation` (`config._experts_implementation`, e.g.
+        "batched_mm"), which is mathematically equivalent but ULP-different
+        from the eager loop our collection patch reimplements. If only the
+        group's layers were patched, downstream activations would depend on
+        WHICH layers are in the group, making grouped collection
+        non-reproducible across group sizes. Pinning every MoE layer to the
+        loop implementation during every pass makes collection bitwise
+        grouping-invariant.
+
+        Default: no-op (correct for architectures whose expert handling does
+        not replace the forward, e.g. DeepSeek V2 nn.Linear hooks).
+
+        Returns:
+            token to pass to detach_passthrough, or None.
+        """
+        return None
+
+    def detach_passthrough(self, layer, token):
+        """Undo attach_passthrough. Default: no-op."""
+        pass
+
     # ── optional override (layer filtering) ───────────────────────────────────
 
     def filter_standard_layers(self, layer, subset: dict) -> dict:
@@ -251,6 +279,10 @@ class GptOssHandler(MoEHandler):
         return {
             "gu_h_map": {e: _GptqH(hidden)       for e in range(num_exp)},
             "dn_h_map": {e: _GptqH(intermediate) for e in range(num_exp)},
+            # Incremented by the patched forward on every invocation; the
+            # collection loop uses it to fail loudly if a fused kernel
+            # forward bypassed the patch (P0.4 fail-closed check).
+            "call_counter": {"n": 0},
         }
 
     def attach_hooks(self, layer, acc_state) -> Any:
@@ -259,11 +291,29 @@ class GptOssHandler(MoEHandler):
             layer.mlp.experts,
             acc_state["gu_h_map"],
             acc_state["dn_h_map"],
+            call_counter=acc_state.get("call_counter"),
         )
         return original_forward          # hook_token = original forward callable
 
     def detach_hooks(self, layer, hook_token):
         layer.mlp.experts.forward = hook_token
+
+    def attach_passthrough(self, layer) -> Any:
+        """Pin the expert forward to the collection-patch loop implementation
+        with no-op accumulators (see MoEHandler.attach_passthrough)."""
+        from gpt_oss_expert_gptq import patch_expert_forward
+
+        class _Null:
+            def add_batch(self, inp, out=None):
+                pass
+
+        null = _Null()
+        num_exp = layer.mlp.experts.gate_up_proj.shape[0]
+        null_map = {e: null for e in range(num_exp)}
+        return patch_expert_forward(layer.mlp.experts, null_map, dict(null_map))
+
+    def detach_passthrough(self, layer, token):
+        layer.mlp.experts.forward = token
 
     def quantize(
         self, layer, acc_state,

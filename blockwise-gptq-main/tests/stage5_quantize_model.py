@@ -143,6 +143,17 @@ def _parse_args():
                    help="Sublayers with GPTQ loss above this threshold are kept in "
                         "BF16 instead of being quantized. Set to 0 to quantize "
                         "everything. (default: 100.0)")
+    p.add_argument("--hessian_cache_dir", type=Path,
+                   default=_REPO_ROOT / "hessian_cache",
+                   help="Root directory for the resumable Hessian cache "
+                        "(default: <repo>/hessian_cache). Interrupted runs "
+                        "resume from completed layers automatically.")
+    p.add_argument("--hessian_layer_group_size", type=int, default=1,
+                   help="Layers per Hessian-collection pass (P0.4). Peak "
+                        "accumulator memory scales with this; collection time "
+                        "scales inversely. Keep at 1 for GPT-OSS-20B on a "
+                        "single H100 unless memory headroom is proven. "
+                        "(default: 1)")
     p.add_argument("--results", type=Path, default=None,
                    help="Path for the JSON results file "
                         "(default: results/stage5_<model_stem>_quantize.json)")
@@ -381,6 +392,8 @@ def main():
             percdamp                   = args.percdamp,
             parallel_hessian           = not args.no_parallel_hessian,
             mixed_precision_threshold  = mixed_threshold,
+            hessian_cache_dir          = str(args.hessian_cache_dir),
+            hessian_layer_group_size   = args.hessian_layer_group_size,
         )
     except Exception as e:
         print(f"\n[ERROR] gptq_quantize_model failed: {e}")

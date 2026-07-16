@@ -24,16 +24,6 @@ Hard-coded model paths in `test_vLLM_deploy_quantized_model.py:2,35`.
 Note stage7's `_CODE_ROOT` points at the repo root (not `opteam-blockwise-gptq/`) —
 the two path constants are inconsistent with each other as well.
 
-### 🔴 P0.4 — Parallel-mode expert Hessians OOM the H100
-**Evidence:** [apply.py:494-531](blockwise-gptq-main/opteam-blockwise-gptq/apply.py#L494-L531)
-allocates accumulators for **all** layers before one full-model pass; `_GptqH` lazily
-allocates `H` on `inp.device` — i.e. **on the GPU** during forward.
-**Math:** GPT-OSS-20B: 24 layers × 32 experts × 2 proj × (2880² × 4 B) ≈ **51 GB** of
-Hessians on GPU + ~42 GB BF16 model ≈ 93 GB > 80 GB H100. `_save_hessians(free_after_save=True)`
-only runs **after** the pass completes — it caps RAM, not peak collection VRAM.
-**Fix:** Memory-bounded layer-group collection (`--hessian_layer_group_size`, start 1),
-resumable per-layer cache with completeness manifest (handoff §P0.4 design).
-
 ### 🔴 P0.5 — Stage 5 results JSON lacks the fields Stage 7 requires
 **Evidence:** Stage 5 writes only settings + `total_gptq_loss` + timing
 ([stage5_quantize_model.py:425-442](blockwise-gptq-main/tests/stage5_quantize_model.py#L425-L442)).
@@ -124,6 +114,32 @@ dense-vs-top-k contract by shape and hard-errors on unknown contracts, and expos
 patched-vs-reference numerical equivalence against the real transformers class,
 expert IDs ≥ top_k, positional-weight isolation, exact add_batch token subsets
 (`logs/tests/gpt_oss_routing_20260716.log`).
+
+### 🟢 P0.4 — Parallel-mode Hessian collection OOM (resolved 2026-07-16)
+Was: all-layer accumulators (~51 GB of expert Hessians **on GPU** for GPT-OSS-20B)
+allocated for one full-model pass, + ~42 GB model > 80 GB H100; cache written only
+after the pass.
+**Fix:** grouped collection (`--hessian_layer_group_size`, default 1): accumulators
+attach to ≤ group_size layers per full-model pass; each group streams to a
+manifest-verified cache (`hessian_cache.py`: atomic writes, SHA-256 per layer file,
+immutable hashed calibration-token cache) and frees before the next group. Peak
+accumulator memory = one group (~2.4 GB for GPT-OSS-20B at group=1) instead of ~51 GB.
+Resume: completed layers (hash-verified) are skipped; tokens reload from the cache.
+Fail-closed: sample exceptions abort; zero-sample dense sublayers abort; NaN/Inf H
+rejected at save; expert-patch bypass (fused-kernel dispatch) detected via call
+counter and aborts. Collection stats (runtime, GPU peak, host RSS, cache bytes)
+recorded per group in the manifest.
+**Key finding during work:** transformers 5.14 dispatches expert forwards via
+`use_experts_implementation` ("batched_mm" etc., ULP-different from the eager loop),
+so collection now pins ALL MoE layers to the patch's loop implementation every pass
+(`attach_passthrough`) — otherwise Hessians depend on group membership.
+**Proof:** `tests/internalTests/test_hessian_grouped_collection.py` — 9/9 incl.
+**bitwise** group1==groupN equivalence of caches AND final quantized weights, resume
+recollects only missing layers with cached tokens, tamper detection (layer + token
+cache), bypass detection, fail-closed aborts
+(`logs/tests/hessian_grouped_20260716.log`). Full regression green: stage1 5/5,
+stage2 7/7, stage3 gpt-oss 6/6, stage3 deepseek 56/56, property1/2/4, routing 9/9,
+hessian canonical 9/9.
 
 ### 🟢 P0.3 — `_GptqH` accumulation mathematically wrong (resolved 2026-07-16)
 Was: `_GptqH.add_batch` weighted each chunk `n/N²` instead of the uniform per-row

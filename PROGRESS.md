@@ -5,6 +5,52 @@ without pointing to the test, log, or artifact that proves it.
 
 ---
 
+## 2026-07-16 08:20 UTC — P0.4: memory-bounded, resumable Hessian collection
+
+**Status:** complete
+
+**Goal:** Replace the OOM-prone all-at-once parallel Hessian collection with the
+grouped, cache-backed, resumable design (handoff §P0.4), fail-closed throughout.
+
+**What was built:**
+- `opteam-blockwise-gptq/hessian_cache.py` — new: manifest-verified per-layer cache
+  (SHA-256 per file, atomic temp+rename writes), immutable hashed calibration-token
+  cache, NaN/Inf rejection at save, per-group collection stats (runtime, GPU peak,
+  host RSS, bytes).
+- `apply.py` — `_run_parallel` rewritten: Phase 1 collects pending layers in groups
+  of `--hessian_layer_group_size` (default 1; ~2.4 GB accumulators per group vs
+  ~51 GB before), one full-model pass per group over cached tokens; Phase 2
+  quantizes from cache with lazy per-layer GPTQ instances. Resume skips
+  hash-verified layers and reloads cached tokens. Sample exceptions abort (the old
+  code warned and skipped); dense sublayers with zero samples abort; MoE layers
+  whose patched forward was never invoked abort (fused-kernel bypass detection).
+- `expert_dispatch.py` — `attach_passthrough`/`detach_passthrough`: every collection
+  pass pins ALL MoE layers to the collection patch's loop implementation.
+- `stage5_quantize_model.py` — `--hessian_cache_dir` (repo-relative default) and
+  `--hessian_layer_group_size` CLI args.
+
+**Key finding:** transformers 5.14 dispatches expert forwards via
+`use_experts_implementation` ("batched_mm", ULP-different from the eager loop). Before
+the passthrough pinning, grouped collection produced Hessians that depended on group
+membership — observed as a single E2M1 bin flip in final weights between group sizes.
+With pinning, group1 == groupN is **bitwise** (D-008).
+
+**Evidence:**
+- `pytest tests/internalTests/test_hessian_grouped_collection.py` → **9/9**
+  (`logs/tests/hessian_grouped_20260716.log`): bitwise grouping equivalence (caches
+  AND final weights), resume-only-missing-layers (forward-pass count verified),
+  layer/token tamper detection, expert-bypass detection, fail-closed aborts,
+  stats recording.
+- Full regression green: stage1 5/5, stage2 7/7, stage3 gpt-oss 6/6,
+  stage3 deepseek 56/56, property1/2/4, routing 9/9, hessian canonical 9/9.
+
+**Next:** P0.5 + P0.6 — per-tensor disposition manifest from Stage 5 and exact
+code/scale preservation through Stage 7 (no re-quantization at pack time).
+
+**Blockers:** none.
+
+---
+
 ## 2026-07-16 07:35 UTC — P0.2 (expert routing) and P0.3 (Hessian accumulation) fixed
 
 **Status:** complete

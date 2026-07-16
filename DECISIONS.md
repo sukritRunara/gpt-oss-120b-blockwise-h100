@@ -87,8 +87,47 @@ percdamp are scale-invariant), so the choice is convention, not correctness.
 
 ---
 
+## D-007 — Hessian collection: memory-bounded layer groups over cached inputs
+
+**Decision:** Collect original-model Hessians in layer groups
+(`--hessian_layer_group_size`, default 1): hooks/accumulators attach only to the
+group, the full unchanged model runs over the (immutable, hashed) cached calibration
+tokens, the group streams to a manifest-verified on-disk cache, then memory is freed
+and the next group begins. Quantization runs only after the cache is complete.
+
+**Why:** The all-at-once design allocates ~51 GB of expert Hessians on GPU alongside
+the ~42 GB model — OOM on H100-80GB (P0.4). Grouping costs
+ceil(n_layers/group_size) full-model passes (~24 extra for GPT-OSS-20B at group=1)
+but bounds accumulator memory at one group (~2.4 GB) and preserves the parallel-mode
+property that all statistics come from the unmodified source model.
+
+**Alternatives:** caching per-layer inputs to disk (handoff-sanctioned) — larger disk
+footprint (activations × samples × layers vs fixed-size Hessians) and a second I/O
+pipeline; rejected for now. Group size is configurable so the trade can be re-measured.
+
+---
+
+## D-008 — Every collection pass pins ALL MoE layers to the loop implementation
+
+**Decision:** During Hessian collection, MoE layers outside the current group get a
+"passthrough" patch: the same explicit expert loop the collection patch uses, with
+no-op accumulators (`MoEHandler.attach_passthrough`).
+
+**Why:** transformers 5.14 dispatches `GptOssExperts.forward` through
+`use_experts_implementation` (`config._experts_implementation` → e.g. "batched_mm"),
+which is mathematically equivalent but ULP-different from the eager loop. With only
+group layers patched, downstream activations — and therefore Hessians and even final
+quantized weights (observed: one E2M1 bin flip) — depended on which layers shared a
+group. Pinning every MoE layer to one implementation makes collection **bitwise**
+grouping-invariant (proven in test_group1_equals_group_all).
+
+**Trade-off:** the loop implementation is slower than batched_mm for full-model
+passes; accepted for reproducibility. Revisit only with evidence it dominates
+collection time.
+
+---
+
 <!-- Pending decisions to record as work proceeds (handoff §9):
-  - Which Hessian-collection strategy was chosen (memory-bounded layer groups).
   - Which vLLM version and NVFP4 contract were pinned.
   - Whether mixed-precision BF16 fallback is retained, and which tensors are excluded.
 -->
