@@ -134,6 +134,7 @@ def gptq_quantize_model(
     mixed_precision_threshold=100.0,
     hessian_cache_dir="hessian_cache",
     hessian_layer_group_size=1,
+    artifact_dir=None,
 ):
     """Quantize all linear layers in a model using GPTQ.
 
@@ -165,9 +166,15 @@ def gptq_quantize_model(
             per full-model calibration pass. Peak accumulator memory scales
             linearly with this; total collection time scales inversely. Start
             at 1 for large MoE models and raise only after measuring headroom.
+        artifact_dir: If set (nvfp4 + parallel mode only), exact quantization
+            artifacts (E2M1 codes + FP8 scales, P0.6) are streamed per layer
+            into this directory as safetensors shards, each tensor verified
+            bit-exact against its QDQ weight before the run continues.
 
     Returns:
-        (all_quantizers, all_layer_losses, all_condition_numbers)
+        (all_quantizers, all_layer_losses, all_condition_numbers, quant_records)
+        quant_records is a list of per-tensor disposition records (P0.5) ready
+        for the Stage 5 manifest; empty when artifact_dir is None.
         Model weights are updated in-place.
     """
     if quant_format not in QUANTIZER_REGISTRY:
@@ -205,9 +212,28 @@ def gptq_quantize_model(
     is_moe           = arch_type in ("qwen3_moe", "gpt_oss", "deepseek_v2")
     embedding_modules = get_embedding_layers(model, arch_type)
 
+    if artifact_dir is not None:
+        if quant_format != "nvfp4":
+            raise ValueError(
+                "artifact_dir (exact code/scale capture, P0.6) is only "
+                f"supported for quant_format='nvfp4', got {quant_format!r}."
+            )
+        if not parallel_hessian:
+            raise ValueError(
+                "artifact_dir requires parallel_hessian=True — the sequential "
+                "debug path does not emit a tensor manifest."
+            )
+
+    # Full module paths for manifest records (e.g. "model.layers.7"), never
+    # positional guesses — resolved by module identity.
+    id_to_name    = {id(m): n for n, m in model.named_modules()}
+    layer_prefixes = {i: id_to_name.get(id(l), f"layers.{i}")
+                      for i, l in enumerate(layers)}
+
     all_quantizers        = {}
     all_layer_losses      = {}
     all_condition_numbers = {}
+    quant_records         = []
 
     if parallel_hessian:
         _run_parallel(
@@ -219,6 +245,7 @@ def gptq_quantize_model(
             hessian_cache_dir, model_name, dataset, nsamples, seqlen, seed,
             all_quantizers, all_layer_losses, all_condition_numbers,
             hessian_layer_group_size,
+            artifact_dir, layer_prefixes, quant_records,
         )
     else:
         _run_sequential(
@@ -312,7 +339,7 @@ def gptq_quantize_model(
               f"(loss > {mixed_precision_threshold}).")
     print()
 
-    return all_quantizers, all_layer_losses, all_condition_numbers
+    return all_quantizers, all_layer_losses, all_condition_numbers, quant_records
 
 
 # ── Shared expert-loss accounting ─────────────────────────────────────────────
@@ -561,6 +588,7 @@ def _run_parallel(
     hessian_cache_dir, model_name, dataset, nsamples_key, seqlen, seed,
     all_quantizers, all_layer_losses, all_condition_numbers,
     hessian_layer_group_size=1,
+    artifact_dir=None, layer_prefixes=None, quant_records=None,
 ):
     """Parallel-Hessian pipeline: grouped collection (P0.4) + quantize-from-cache.
 
@@ -682,33 +710,88 @@ def _run_parallel(
         rtn_count          = 0
         bf16_count         = 0
 
+        capture = artifact_dir is not None
+        prefix = (layer_prefixes or {}).get(layer_idx, f"layers.{layer_idx}")
+        layer_artifacts = {}      # (full_name, expert_idx|None) → artifact
+        layer_records   = []      # manifest records for this layer
+
         for name, g in gptq_map.items():
             orig_weight = subset[name].weight.data.clone()
+            out_f, in_f = g.rows, g.columns
+            full_name = f"{prefix}.{name}"
 
-            if mode == "blockwise":
-                if log_condition:
-                    loss, cond_nums = g.fasterquant_blockwise(
-                        blocksize=blocksize, percdamp=percdamp,
-                        log_condition=True
-                    )
-                    layer_cond_numbers[name] = cond_nums
+            if capture:
+                g.quantizer.begin_capture(out_f, in_f)
+            try:
+                if mode == "blockwise":
+                    if log_condition:
+                        loss, cond_nums = g.fasterquant_blockwise(
+                            blocksize=blocksize, percdamp=percdamp,
+                            log_condition=True
+                        )
+                        layer_cond_numbers[name] = cond_nums
+                    else:
+                        loss = g.fasterquant_blockwise(
+                            blocksize=blocksize, percdamp=percdamp
+                        )
                 else:
-                    loss = g.fasterquant_blockwise(
-                        blocksize=blocksize, percdamp=percdamp
-                    )
-            else:
-                loss = g.fasterquant(blocksize=blocksize, percdamp=percdamp)
+                    loss = g.fasterquant(blocksize=blocksize, percdamp=percdamp)
+            except Exception:
+                if capture:
+                    g.quantizer.abort_capture()
+                raise
 
-            if (mixed_precision_threshold is not None
-                    and _is_valid_loss(loss)
-                    and loss > mixed_precision_threshold):
+            fell_back = (mixed_precision_threshold is not None
+                         and _is_valid_loss(loss)
+                         and loss > mixed_precision_threshold)
+
+            record = {
+                "name": full_name,
+                "param": f"{full_name}.weight",
+                "kind": "linear",
+                "layer_index": layer_idx,
+                "projection": name.rsplit(".", 1)[-1],
+                "expert_index": None,
+                "orig_shape": [out_f, in_f],
+                "orientation": "out_in",
+                "orig_dtype": str(subset[name].weight.dtype),
+                "requested_format": quant_format,
+                "disposition": None,
+                "reason": None,
+                "gptq_blocksize": blocksize,
+                "scale_block_size": nvfp4_block_size,
+                "loss": loss if _is_valid_loss(loss) else None,
+                "normalized_loss": (loss / (out_f * in_f)
+                                    if _is_valid_loss(loss) else None),
+                "hessian_nsamples": g.nsamples,
+                "artifact": None,
+            }
+
+            if fell_back:
                 subset[name].weight.data.copy_(orig_weight)
                 losses[name] = "BF16"
                 bf16_count += 1
+                if capture:
+                    g.quantizer.abort_capture()
+                record["disposition"] = "BF16_FALLBACK"
+                record["reason"] = (f"loss {loss:.4f} > threshold "
+                                    f"{mixed_precision_threshold}")
             else:
                 losses[name] = loss
                 all_quantizers[f"layer.{layer_idx}.{name}"] = g.quantizer
+                record["disposition"] = "GPTQ_NVFP4" if capture else None
+                if capture:
+                    from quant_artifacts import verify_artifact_matches
+                    art = g.quantizer.end_capture()
+                    # P0.6 invariant, enforced immediately: the artifact must
+                    # reproduce the QDQ weight bit-for-bit.
+                    verify_artifact_matches(art, subset[name].weight.data,
+                                            what=full_name)
+                    layer_artifacts[(full_name, None)] = art
+                    record["artifact"] = "pending"   # filled after shard write
 
+            if capture:
+                layer_records.append(record)
             del orig_weight
             g.free()
 
@@ -722,12 +805,38 @@ def _run_parallel(
                 blocksize=blocksize,
                 percdamp=percdamp,
                 threshold=mixed_precision_threshold,
+                capture_artifacts=capture,
             )
             rtn_delta, bf16_delta = _process_expert_losses(
                 losses, expert_losses, handler
             )
             rtn_count  += rtn_delta
             bf16_count += bf16_delta
+
+            if capture:
+                expert_records, expert_arts = handler.build_records(
+                    layer, expert_losses,
+                    layer_idx=layer_idx, prefix=prefix,
+                    quant_format=quant_format, blocksize=blocksize,
+                    nvfp4_block_size=nvfp4_block_size,
+                    acc_state=acc_state,
+                )
+                layer_records.extend(expert_records)
+                layer_artifacts.update(expert_arts)
+
+        # ── Stream this layer's exact artifacts to disk (P0.6) ────────────────
+        if capture:
+            from quant_artifacts import save_layer_artifacts, artifact_keys
+            if layer_artifacts:
+                shard = save_layer_artifacts(artifact_dir, layer_idx,
+                                             layer_artifacts)
+            else:
+                shard = None
+            for rec in layer_records:
+                if rec["artifact"] == "pending":
+                    keys = artifact_keys(rec["name"], rec["expert_index"])
+                    rec["artifact"] = {"file": shard, **keys}
+            quant_records.extend(layer_records)
 
         all_layer_losses[layer_idx] = losses
         if layer_cond_numbers:

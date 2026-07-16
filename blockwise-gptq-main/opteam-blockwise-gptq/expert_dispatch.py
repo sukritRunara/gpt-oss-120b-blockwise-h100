@@ -163,13 +163,31 @@ class MoEHandler:
         quant_format: str, device,
         nvfp4_block_size: int,
         blocksize: int, percdamp: float, threshold,
+        capture_artifacts: bool = False,
     ) -> dict:
         """Quantize all expert weights using accumulated Hessians, write back in-place.
+
+        Args:
+            capture_artifacts: If True (nvfp4 only), record each slice's exact
+                E2M1 codes and FP8 scales (P0.6) in the returned dict.
 
         Returns:
             losses — architecture-specific dict, passed to summarize_losses().
         """
         raise NotImplementedError
+
+    def build_records(self, layer, expert_losses, *, layer_idx, prefix,
+                      quant_format, blocksize, nvfp4_block_size, acc_state):
+        """Build P0.5 manifest records from a capture-enabled quantize() result.
+
+        Returns:
+            (records, artifacts) — list of manifest record dicts (with
+            "artifact" set to "pending" where an artifact exists) and
+            {(name, expert_idx): QuantizedTensorArtifact}.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support artifact capture"
+        )
 
     def summarize_losses(
         self, losses: dict
@@ -319,18 +337,29 @@ class GptOssHandler(MoEHandler):
         self, layer, acc_state,
         quant_format, device, nvfp4_block_size,
         blocksize, percdamp, threshold,
+        capture_artifacts: bool = False,
     ) -> dict:
         """Build expert shims ONE AT A TIME from _GptqH accumulators and quantize.
 
         This avoids holding all expert weight copies in memory simultaneously.
         If loss > threshold the shim's quantized weight is discarded and the
         original batched tensor is left untouched (BF16).  Cholesky failures
-        fall back to RTN for that expert only.
+        fall back to BF16 for that expert only (recorded, never silent).
+
+        With capture_artifacts=True (nvfp4 only), each quantized slice's exact
+        E2M1 codes/FP8 scales are captured and verified bit-exact against the
+        written-back weight (P0.6) before continuing.
+
+        Returns:
+            {"gu": {e: loss|"RTN"|"BF16"}, "dn": {...},
+             "gu_reason"/"dn_reason": {e: str|None},
+             "gu_art"/"dn_art": {e: QuantizedTensorArtifact|None}}   (capture only)
         """
         from gpt_oss_expert_gptq import (
             _make_quantizer as _exp_quant,
             _rtn_inplace,
         )
+        from quant_artifacts import verify_artifact_matches
 
         experts      = layer.mlp.experts
         orig_dtype   = experts.gate_up_proj.dtype
@@ -339,106 +368,153 @@ class GptOssHandler(MoEHandler):
         gate_up_out  = experts.gate_up_proj.shape[2]
         intermediate = experts.down_proj.shape[1]
 
-        gu_h_map  = acc_state["gu_h_map"]
-        dn_h_map  = acc_state["dn_h_map"]
-        gu_losses: Dict[int, Any] = {}
-        dn_losses: Dict[int, Any] = {}
+        gu_h_map = acc_state["gu_h_map"]
+        dn_h_map = acc_state["dn_h_map"]
+        result = {"gu": {}, "dn": {}, "gu_reason": {}, "dn_reason": {},
+                  "gu_art": {}, "dn_art": {}}
+
+        def _one_slice(side, e, h, batched, in_f, out_f):
+            """Quantize one expert slice; fill result[side]/[side_reason]/[side_art].
+
+            batched: the [in, out] slice view in the model (written in-place).
+            The quantization operates on the transposed [out, in] orientation.
+            """
+            losses  = result[side]
+            reasons = result[f"{side}_reason"]
+            arts    = result[f"{side}_art"]
+            label   = "gate_up " if side == "gu" else "down    "
+
+            if h.nsamples == 0 or h.H is None:
+                # RTN fallback for never-activated experts — explicit, recorded.
+                q = _exp_quant(quant_format, device, nvfp4_block_size)
+                if capture_artifacts:
+                    q.begin_capture(out_f, in_f)
+                _rtn_inplace(batched, q)
+                if capture_artifacts:
+                    art = q.end_capture()
+                    verify_artifact_matches(
+                        art, batched.T,
+                        what=f"expert[{e}].{side} (RTN)")
+                    arts[e] = art
+                losses[e] = "RTN"
+                reasons[e] = "no calibration samples reached this expert"
+                print(f"    expert[{e:02d}] {label} → RTN  (no Hessian)")
+                return
+
+            shim = nn.Linear(in_f, out_f, bias=False, dtype=torch.float32)
+            shim.weight.data.copy_(batched.detach().T.float())
+            shim = shim.to(device)
+            g = GPTQ(shim)
+            g.quantizer = _exp_quant(quant_format, device, nvfp4_block_size)
+            g.H        = h.H.to(device)
+            g.nsamples = h.nsamples
+            if capture_artifacts:
+                g.quantizer.begin_capture(out_f, in_f)
+            try:
+                loss = g.fasterquant_blockwise(blocksize=blocksize,
+                                               percdamp=percdamp)
+                if math.isnan(loss):
+                    raise ValueError("fasterquant returned NaN loss")
+                if threshold is not None and loss > threshold:
+                    if capture_artifacts:
+                        g.quantizer.abort_capture()
+                    losses[e] = "BF16"
+                    reasons[e] = f"loss {loss:.4f} > threshold {threshold}"
+                    print(f"    expert[{e:02d}] {label} → BF16 "
+                          f"(loss={loss:.2f} > {threshold})")
+                else:
+                    if capture_artifacts:
+                        art = g.quantizer.end_capture()
+                        # P0.6: verify against the fp32 shim BEFORE the bf16
+                        # writeback cast — strictest possible comparison.
+                        verify_artifact_matches(
+                            art, g.layer.weight.data,
+                            what=f"expert[{e}].{side}")
+                        arts[e] = art
+                    batched.copy_(g.layer.weight.data.T.to(orig_dtype))
+                    losses[e] = loss
+                    reasons[e] = None
+                    print(f"    expert[{e:02d}] {label} → NVFP4 "
+                          f"(loss={loss:.4f})")
+            except Exception as exc:
+                if capture_artifacts:
+                    g.quantizer.abort_capture()
+                warnings.warn(
+                    f"[GPTQ] Expert {e} {side} failed "
+                    f"({type(exc).__name__}: {exc}); keeping BF16."
+                )
+                losses[e] = "BF16"
+                reasons[e] = f"exception: {type(exc).__name__}: {exc}"
+                print(f"    expert[{e:02d}] {label} → BF16 "
+                      f"(exception: {type(exc).__name__})")
+            finally:
+                g.free()
+                del shim
 
         for e in range(num_experts):
-            h_gu = gu_h_map[e]
-            h_dn = dn_h_map[e]
+            _one_slice("gu", e, gu_h_map[e], experts.gate_up_proj.data[e],
+                       in_f=hidden, out_f=gate_up_out)
+            _one_slice("dn", e, dn_h_map[e], experts.down_proj.data[e],
+                       in_f=intermediate, out_f=hidden)
 
-            # ── gate_up ───────────────────────────────────────────────────────
-            if h_gu.nsamples == 0 or h_gu.H is None:
-                q = _exp_quant(quant_format, device, nvfp4_block_size)
-                q.find_params(experts.gate_up_proj.data[e].T.float())
-                _rtn_inplace(experts.gate_up_proj.data[e], q)
-                gu_losses[e] = "RTN"
-                print(f"    expert[{e:02d}] gate_up  → RTN  (no Hessian)")
-            else:
-                shim = nn.Linear(hidden, gate_up_out, bias=False,
-                                 dtype=torch.float32)
-                shim.weight.data.copy_(
-                    experts.gate_up_proj[e].detach().T.float()
-                )
-                shim = shim.to(device)
-                g = GPTQ(shim)
-                g.quantizer = _exp_quant(quant_format, device, nvfp4_block_size)
-                g.H        = h_gu.H.to(device)
-                g.nsamples = h_gu.nsamples
-                try:
-                    loss = g.fasterquant_blockwise(blocksize=blocksize,
-                                                   percdamp=percdamp)
-                    if math.isnan(loss):
-                        raise ValueError("fasterquant returned NaN loss")
-                    if threshold is not None and loss > threshold:
-                        gu_losses[e] = "BF16"
-                        print(f"    expert[{e:02d}] gate_up  → BF16 "
-                              f"(loss={loss:.2f} > {threshold})")
-                    else:
-                        experts.gate_up_proj.data[e].copy_(
-                            g.layer.weight.data.T.to(orig_dtype)
-                        )
-                        gu_losses[e] = loss
-                        print(f"    expert[{e:02d}] gate_up  → NVFP4 "
-                              f"(loss={loss:.4f})")
-                except Exception as exc:
-                    warnings.warn(
-                        f"[GPTQ] Expert {e} gate_up failed "
-                        f"({type(exc).__name__}: {exc}); keeping BF16."
-                    )
-                    gu_losses[e] = "BF16"
-                    print(f"    expert[{e:02d}] gate_up  → BF16 "
-                          f"(exception: {type(exc).__name__})")
-                g.free()
-                del shim
+        if not capture_artifacts:
+            result.pop("gu_art"); result.pop("dn_art")
+        return result
 
-            # ── down_proj ─────────────────────────────────────────────────────
-            if h_dn.nsamples == 0 or h_dn.H is None:
-                q = _exp_quant(quant_format, device, nvfp4_block_size)
-                q.find_params(experts.down_proj.data[e].T.float())
-                _rtn_inplace(experts.down_proj.data[e], q)
-                dn_losses[e] = "RTN"
-                print(f"    expert[{e:02d}] down     → RTN  (no Hessian)")
-            else:
-                shim = nn.Linear(intermediate, hidden, bias=False,
-                                 dtype=torch.float32)
-                shim.weight.data.copy_(
-                    experts.down_proj[e].detach().T.float()
-                )
-                shim = shim.to(device)
-                g = GPTQ(shim)
-                g.quantizer = _exp_quant(quant_format, device, nvfp4_block_size)
-                g.H        = h_dn.H.to(device)
-                g.nsamples = h_dn.nsamples
-                try:
-                    loss = g.fasterquant_blockwise(blocksize=blocksize,
-                                                   percdamp=percdamp)
-                    if math.isnan(loss):
-                        raise ValueError("fasterquant returned NaN loss")
-                    if threshold is not None and loss > threshold:
-                        dn_losses[e] = "BF16"
-                        print(f"    expert[{e:02d}] down     → BF16 "
-                              f"(loss={loss:.2f} > {threshold})")
-                    else:
-                        experts.down_proj.data[e].copy_(
-                            g.layer.weight.data.T.to(orig_dtype)
-                        )
-                        dn_losses[e] = loss
-                        print(f"    expert[{e:02d}] down     → NVFP4 "
-                              f"(loss={loss:.4f})")
-                except Exception as exc:
-                    warnings.warn(
-                        f"[GPTQ] Expert {e} down failed "
-                        f"({type(exc).__name__}: {exc}); keeping BF16."
-                    )
-                    dn_losses[e] = "BF16"
-                    print(f"    expert[{e:02d}] down     → BF16 "
-                          f"(exception: {type(exc).__name__})")
-                g.free()
-                del shim
+    def build_records(self, layer, expert_losses, *, layer_idx, prefix,
+                      quant_format, blocksize, nvfp4_block_size, acc_state):
+        """Manifest records for every expert slice of this layer (P0.5)."""
+        experts     = layer.mlp.experts
+        num_experts = experts.gate_up_proj.shape[0]
+        dtype_str   = str(experts.gate_up_proj.dtype)
 
-        return {"gu": gu_losses, "dn": dn_losses}
+        sides = {
+            "gu": ("gate_up", f"{prefix}.mlp.experts.gate_up_proj",
+                   experts.gate_up_proj.shape[2], experts.gate_up_proj.shape[1],
+                   acc_state["gu_h_map"]),
+            "dn": ("down", f"{prefix}.mlp.experts.down_proj",
+                   experts.down_proj.shape[2], experts.down_proj.shape[1],
+                   acc_state["dn_h_map"]),
+        }
+
+        records, artifacts = [], {}
+        for side, (proj, name, out_f, in_f, h_map) in sides.items():
+            losses  = expert_losses[side]
+            reasons = expert_losses.get(f"{side}_reason", {})
+            arts    = expert_losses.get(f"{side}_art", {})
+            for e in range(num_experts):
+                v = losses.get(e)
+                if isinstance(v, float) and not math.isnan(v):
+                    disposition, loss = "GPTQ_NVFP4", v
+                elif v == "RTN":
+                    disposition, loss = "RTN_NVFP4", None
+                else:
+                    disposition, loss = "BF16_FALLBACK", None
+                art = arts.get(e)
+                records.append({
+                    "name": name,
+                    "param": name,
+                    "kind": "expert_slice",
+                    "layer_index": layer_idx,
+                    "projection": proj,
+                    "expert_index": e,
+                    "orig_shape": [out_f, in_f],
+                    "orientation": "transposed_out_in",
+                    "orig_dtype": dtype_str,
+                    "requested_format": quant_format,
+                    "disposition": disposition,
+                    "reason": reasons.get(e),
+                    "gptq_blocksize": blocksize,
+                    "scale_block_size": nvfp4_block_size,
+                    "loss": loss,
+                    "normalized_loss": (loss / (out_f * in_f)
+                                        if loss is not None else None),
+                    "hessian_nsamples": h_map[e].nsamples,
+                    "artifact": "pending" if art is not None else None,
+                })
+                if art is not None:
+                    artifacts[(name, e)] = art
+        return records, artifacts
 
     def summarize_losses(self, losses) -> Tuple[int, int, int, float, float]:
         def _v(x): return isinstance(x, float) and not math.isnan(x) and not math.isinf(x)
@@ -551,7 +627,13 @@ class DeepSeekV2Handler(MoEHandler):
         self, layer, acc_state,
         quant_format, device, nvfp4_block_size,
         blocksize, percdamp, threshold,
+        capture_artifacts: bool = False,
     ) -> dict:
+        if capture_artifacts:
+            raise NotImplementedError(
+                "Exact artifact capture (P0.6) is not implemented for the "
+                "DeepSeek V2 expert path — run without artifact_dir."
+            )
         from deepseek_v2_lite_expert_gptq import quantize_and_writeback_experts
         return quantize_and_writeback_experts(
             layer,
