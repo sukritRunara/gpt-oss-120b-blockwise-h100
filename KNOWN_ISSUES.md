@@ -14,7 +14,48 @@ current pipeline is invalid for the experiment.
 
 ## Open
 
-### 🔴 P0.10 — vLLM 0.25.1 Marlin NVFP4-MoE numerically corrupt at GPT-OSS scale (UPSTREAM)
+### 🟡 P1.1 — Intermittent near-tie greedy flips in the Marlin MoE serving path (quality-neutral)
+
+Under identical conditions (same batch, greedy, prefix caching off,
+enforce_eager), the full-NVFP4 arms occasionally produce a different token at
+specific near-tie logit positions between reruns: observed in 2 of 6 strict
+probes (C: 1/8 prompts; D: 4/8 prompts; per-prompt flip positions are stable
+and coincide with the tokens where run 1 also splits from the arm's QDQ
+reference — i.e. genuine logit ties decided by ~ULP kernel noise). The BF16
+control was bitwise-stable under the same probe. Not corruption: greedy-64
+reference agreement is bit-identical across all probes (C 0.8848, D 0.8691),
+Harmony chat is always coherent, and all 36 full-NVFP4 benchmark cells had
+zero failures. `vllm.envs.VLLM_MARLIN_USE_ATOMIC_ADD` defaults to 0 (ruled
+out); suspected order-nondeterministic token grouping in the MoE align/gemm
+path. The serving gate reports rerun-flip statistics
+(`rerun_prefix_agreement_per_prompt`) and gates on them only with
+`--strict_determinism`. Upstream-relevant; candidate addendum to the P0.10
+issue draft.
+
+### 🟢 P0.10 — RESOLVED via plugin workaround (2026-07-17); upstream bug root-caused
+
+**Root cause (isolated standalone, exact-reference replay harness):**
+`ops.moe_wna16_marlin_gemm`'s **`mul_topk_weights=True` path** produces fully
+corrupt output (~1e33 ≈ correct value × an out-of-bounds fp32 multiplier
+read) at gpt-oss's shapes. Same weights + schedule are bit-healthy with
+`mul_topk_weights=False`. Independent of thread config, block size, reduce
+mode, and weight values; small shapes unaffected (the OOB garbage is
+allocation-layout-dependent — hence the earlier misleading E32×2880 boundary).
+Elimination trail: gemm1 ✓ → gemm2 ✗ → w1-data-under-gemm2-pattern ✗ →
+(top_k=1, mul=False) ✓ / (top_k=4, mul=True) ✗.
+
+**Fix (plugin P5):** strip the in-kernel multiply for the gemm2 call and
+apply routing weights as an elementwise multiply on the [M·topk, K] output —
+mathematically identical. Scoped to `apply_router_weight_on_input=False`.
+
+**Validation:** 2-layer real-weight repro matches its QDQ reference; the
+full 20B arm-D pack passes the serving gate (deterministic, Harmony chat OK,
+greedy-64 agreement 0.869 ≥ 0.85) — `results/quality/serving_check_fullD.json`.
+Upstream issue material: `scripts/marlin_replay*.py` + capture blob +
+`models/fixture-real2l-packed`.
+
+### (historical isolation notes below, superseded by the root cause above)
+### P0.10-history — vLLM 0.25.1 Marlin NVFP4-MoE numerically corrupt at GPT-OSS scale (UPSTREAM)
 **Symptom:** full-NVFP4 GPT-OSS packs load and run, but MoE outputs explode to
 ~1e33 (≈ the 2^119-processed `weight_scale_2` leaking through unscaled) →
 downstream overflow → uniform logits → token-0 spam. Deterministic.

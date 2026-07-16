@@ -1,0 +1,28 @@
+{
+  "deterministic": true,
+  "rerun_prefix_agreement_per_prompt": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "batch_size_invariant_prompt0": false,
+  "greedy64_prefix_agreement_mean": 0.478515625,
+  "greedy64_prefix_agreement_per_prompt": [
+    0.203125,
+    0.875,
+    0.28125,
+    0.015625,
+    1.0,
+    1.0,
+    0.390625,
+    0.0625
+  ],
+  "harmony_chat_ok": true,
+  "harmony_chat_sample": "analysisThe user asks: \"In one sentence, what is GPTQ?\" They want a concise definition. GPTQ is a quantization method for GPT models, specifically a post-training quantization technique that uses a qu",
+  "gate_pass": false
+}

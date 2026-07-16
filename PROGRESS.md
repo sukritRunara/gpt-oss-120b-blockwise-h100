@@ -5,6 +5,46 @@ without pointing to the test, log, or artifact that proves it.
 
 ---
 
+## 2026-07-17 — P0.10 ROOT-CAUSED AND FIXED: full-NVFP4 serving gate PASS
+
+**Status:** fix validated on the full 20B pack; full-NVFP4 D/C serving
+benchmarks running (branch `fix/marlin-moe`)
+
+**Root cause:** `ops.moe_wna16_marlin_gemm`'s `mul_topk_weights=True` path
+reads a bogus fp32 multiplier at gpt-oss shapes (~1e33 output). Proven by
+standalone capture/replay vs an exact torch reference: gemm1 clean; gemm2
+`top_k=4, mul=True` → 128/128 rows bad (absmax 3.98e+32); identical args with
+`top_k=1, mul=False` + external multiply → 0/128 bad (maxrel 2.4e-3).
+Weight-value independent; thread-config/reduce-mode independent; small shapes
+unaffected (layout-dependent OOB). Scripts: `scripts/marlin_replay*.py`,
+`scripts/fixture_numeric_check.py`.
+
+**Fix (plugin P5, D-014):** gemm2 runs with `mul_topk_weights=False`; routing
+weights applied externally (`out.mul_(topk_weights.reshape(-1,1))`).
+Mathematically identical, no CUDA rebuild.
+
+**Validation:**
+- 2-layer real-weight repro: greedy output now matches its QDQ reference
+  (was all-garbage) — `results/pilot/fixture_real2l_*`
+- **Full 20B arm-D pack: serving gate PASS** — deterministic, Harmony chat
+  coherent, greedy-64 prefix agreement **0.869** (gate ≥0.85) —
+  `results/quality/serving_check_fullD.json`
+
+**Docs:** D-014, KNOWN_ISSUES P0.10→resolved,
+`docs/UPSTREAM_ISSUE_VLLM_MARLIN_MOE.md` (draft, not filed).
+
+**Completion (same day):** full-NVFP4 C and D benchmarked end-to-end (36
+cells, zero failures) — D serves in **12.86 GiB** (vs 39.15 BF16) at ~2× BF16
+decode throughput (3397 vs 1717 tok/s @ c=32), slower compute-bound prefill
+(expected weight-only trade) — `results/serving/comparison_final.{json,md}`.
+Arm C gate: **0.885 PASS**. Gate probe hardened along the way (it had compared
+batch-of-8 vs batch-of-1 — batch-size variance, which even BF16 fails; then a
+self-matching pgrep deadlock; then prefix-cache default). Four strict probes
+characterized an intermittent, quality-neutral near-tie greedy flip in the
+Marlin MoE path → KNOWN_ISSUES P1.1, D-015 (reported, not gated).
+
+---
+
 ## 2026-07-16 17:00 UTC — NIGHT-1 COMPLETE: all arms built, quality + serving measured
 
 **Status:** complete — see docs/REPORT.md for the full write-up

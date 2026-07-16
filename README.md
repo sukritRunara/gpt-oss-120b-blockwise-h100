@@ -153,16 +153,20 @@ skip. Interrupted serving benchmarks are per-cell JSONL — rerun the cell.
 - Arm B is a decoded-MXFP4 source (see §3) — quality deltas are measured
   against it, not against the original master.
 - Serving arm A uses vLLM's native MXFP4 path (different kernels than C/D).
-- Three vLLM 0.25.1 upstream gaps are patched by `vllm-gptoss-nvfp4-plugin`
-  (see `docs/VLLM_NVFP4_CONTRACT.md` §6 and `docs/TROUBLESHOOTING.md`).
+- Four vLLM 0.25.1 upstream gaps are patched by `vllm-gptoss-nvfp4-plugin` —
+  including the Marlin MoE `mul_topk_weights` output-corruption bug that
+  initially blocked full-NVFP4 serving (see `docs/VLLM_NVFP4_CONTRACT.md` §6,
+  `docs/UPSTREAM_ISSUE_VLLM_MARLIN_MOE.md`, and `docs/TROUBLESHOOTING.md`).
 
-## 9. Current results (night-1 complete)
+## 9. Current results (complete)
 
 **Headline:** blockwise GPTQ is 2.24× closer to the BF16 source than matched
 RTN at identical NVFP4 format (KL 0.0113 vs 0.0254; top-1 1.00 for both;
 task suite at ceiling for both). The full-NVFP4 artifact is 13 GB vs 39 GB
-BF16. Full-NVFP4 expert *serving* is blocked by an isolated upstream vLLM
-0.25.1 Marlin-MoE kernel bug (KNOWN_ISSUES P0.10, with repro checkpoints);
-serving comparisons for A/B/D-hybrid completed with zero failed requests.
+BF16 and serves in **12.86 GiB VRAM** with **~2× BF16 decode throughput** at
+moderate concurrency (slower compute-bound prefill — expected for weight-only
+W4 on Hopper). The upstream vLLM Marlin-MoE corruption (P0.10) was
+root-caused and worked around in the plugin (DECISIONS D-014); all five
+serving arms completed with zero failed requests.
 
 Full write-up: `docs/REPORT.md`. Evidence trail: `PROGRESS.md`.

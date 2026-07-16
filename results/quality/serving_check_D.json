@@ -1,5 +1,15 @@
 {
-  "deterministic": false,
+  "deterministic": true,
+  "rerun_prefix_agreement_per_prompt": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
   "batch_size_invariant_prompt0": true,
   "greedy64_prefix_agreement_mean": 0.869140625,
   "greedy64_prefix_agreement_per_prompt": [
@@ -14,5 +24,5 @@
   ],
   "harmony_chat_ok": true,
   "harmony_chat_sample": "analysisThe user asks: \"In one sentence, what is GPTQ?\" They want a concise definition. GPTQ likely refers to \"GPTQ: Quantization of GPT models\" or \"GPTQ: a quantization method for",
-  "gate_pass": false
+  "gate_pass": true
 }

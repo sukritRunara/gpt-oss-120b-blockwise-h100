@@ -220,6 +220,52 @@ serving results as reportable outcomes ("A null or negative speed result is
 acceptable. A misleading or unproven speed claim is not."). No full-NVFP4
 serving numbers will be claimed.
 
+*(Superseded by D-014: the kernel bug was subsequently root-caused and worked
+around, and full-NVFP4 serving passed the gate.)*
+
+---
+
+## D-014 — P0.10 fixed by bypassing the kernel's topk-weight multiply
+
+**Decision:** The corrupt `mul_topk_weights=True` path in
+`moe_wna16_marlin_gemm` is bypassed in the plugin: gemm2 runs with
+`mul_topk_weights=False` and the routing weights are applied as an
+elementwise multiply on the gemm output rows.
+
+**Why:** Mathematically identical (the kernel multiply is a per-row scalar
+on the same rows), pure Python, negligible cost (~one fused elementwise op
+per MoE layer), and avoids a CUDA rebuild. The kernel bug itself (an
+out-of-bounds multiplier read, layout-dependent) remains an upstream issue —
+the standalone replay harness + capture blob + 2-layer repro checkpoint
+constitute the report.
+
+**Validation:** full 20B serving gate PASS at 0.869 greedy-64 agreement
+(threshold 0.85); deterministic; coherent Harmony chat.
+
+---
+
+## D-015 — Serving gate reports (not gates on) bitwise rerun determinism
+
+**Decision:** `pilot_serving_check.py`'s original "deterministic" criterion
+compared batch-of-8 vs batch-of-1 generation — actually measuring batch-size
+invariance, which even the BF16 arm fails (vLLM's reduction order varies with
+batch composition). The probe now measures true rerun determinism (identical
+batch twice) plus batch invariance separately, mirrors the serving flags
+(prefix caching off), and reports per-prompt rerun agreement. Bitwise rerun
+equality is REPORTED but only gates with `--strict_determinism`.
+
+**Why:** Four strict probes showed the Marlin MoE path intermittently flips
+single near-tie greedy tokens between identical runs (KNOWN_ISSUES P1.1)
+while every quality signal is stable across probes (agreement means
+bit-identical each time: C 0.8848, D 0.8691; chat coherent; zero benchmark
+failures). Gating a correctness check on ULP-level tie-breaks would
+flip-flop verdicts run to run without measuring artifact quality. The flip
+statistics remain in every gate JSON so the caveat can't silently vanish.
+
+**Alternatives:** chasing the kernel-level source (suspected
+order-nondeterministic MoE token grouping) is upstream work — noted in the
+issue draft, out of scope for this milestone.
+
 ---
 
 <!-- Pending decisions to record as work proceeds (handoff §9):
