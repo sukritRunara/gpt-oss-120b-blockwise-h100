@@ -33,7 +33,6 @@ CMD=("$ROOT/.venv-serve/bin/vllm" serve "$MODEL_PATH"
      --max-model-len "$MAX_MODEL_LEN"
      --gpu-memory-utilization 0.90
      --no-enable-prefix-caching
-     --disable-log-requests
      ${EXTRA_ARGS:-}
      "$@")
 
