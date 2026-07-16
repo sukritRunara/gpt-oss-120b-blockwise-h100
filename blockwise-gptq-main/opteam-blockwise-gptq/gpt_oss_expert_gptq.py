@@ -147,25 +147,53 @@ def patch_expert_forward(
     experts,
     gate_up_gptq: Dict[int, GPTQ],
     down_gptq: Dict[int, GPTQ],
+    call_counter: Optional[dict] = None,
 ):
     """Monkey-patch GptOssExperts.forward to collect per-expert Hessians.
 
-    The patched forward always uses the explicit expert loop (the
-    ``if self.training`` path), regardless of device. For each active
-    expert e it:
-      1. calls gate_up_gptq[e].add_batch(current_state)   — input to gate_up
-      2. performs the gate_up + SwiGLU computation
-      3. calls down_gptq[e].add_batch(gated_output)        — input to down
-      4. performs the down projection and combines outputs
+    The patched forward reimplements the explicit expert loop of the pinned
+    Transformers implementation (verified against transformers 5.14.0,
+    ``models/gpt_oss/modeling_gpt_oss.py::GptOssExperts.forward``), inserting
+    add_batch() calls at the two projection inputs. For each hit expert e:
+      1. gate_up_gptq[e].add_batch(current_state)   — input to gate_up
+      2. gate_up + clamped SwiGLU (matches GptOssExperts._apply_gate)
+      3. down_gptq[e].add_batch(gated_output)        — input to down
+      4. down projection, weighted by routing score, index_add into output
 
-    The patched forward produces numerically identical outputs to the
-    original training-mode path (same computation, just with add_batch
-    calls inserted).
+    Routing contract (P0.2 fix)
+    ---------------------------
+    Two Transformers variants exist for the tensors GptOssExperts.forward
+    receives; they are distinguished at call time by shape:
+
+      top-k variant (transformers >= 4.56 / 5.x, incl. pinned 5.14.0):
+          hidden_states   [num_tokens, hidden]      (already flat)
+          router_indices  [num_tokens, top_k]       expert IDs
+          routing_weights [num_tokens, top_k]       softmax over top-k values
+          → weight lookup is routing_weights[token_idx, TOP_K_POS]
+
+      dense variant (early transformers 4.55.x):
+          routing_weights [num_tokens, num_experts] scatter of top-k softmax
+          → weight lookup is routing_weights[token_idx, EXPERT_ID]
+
+    The old code hard-coded a third, incorrect hybrid: it derived
+    num_experts from routing_weights.shape[1] (= top_k on the pinned
+    version, crashing one_hot for any expert ID >= top_k+1) and indexed
+    routing_weights by expert ID.
+
+    The expert mask uses num_classes=num_experts, exactly like the pinned
+    implementation (no +1 padding slot in 5.14.0).
 
     Args:
         experts:       GptOssExperts instance to patch.
-        gate_up_gptq:  From setup_expert_gptq_instances.
+        gate_up_gptq:  From setup_expert_gptq_instances (any objects with
+                       .add_batch — GPTQ or _GptqH).
         down_gptq:     From setup_expert_gptq_instances.
+        call_counter:  Optional dict; ``call_counter["n"]`` is incremented on
+                       every patched-forward invocation. Callers use this to
+                       fail loudly if the patch was bypassed (e.g. by a fused
+                       MegaBlocks kernel forward — GptOssMLP is decorated with
+                       @use_kernel_forward_from_hub, which can skip
+                       experts.forward entirely if kernelization is enabled).
 
     Returns:
         original_forward: the original bound method.
@@ -174,31 +202,52 @@ def patch_expert_forward(
     original_forward = experts.forward  # save bound method
 
     def _patched_forward(hidden_states, router_indices=None, routing_weights=None):
-        batch_size = hidden_states.shape[0]
-        flat       = hidden_states.reshape(-1, experts.hidden_size)
-        num_exp    = routing_weights.shape[1]
+        if call_counter is not None:
+            call_counter["n"] = call_counter.get("n", 0) + 1
+
+        num_experts = experts.gate_up_proj.shape[0]
+
+        # hidden_states arrives flat [num_tokens, hidden] on the pinned
+        # version (GptOssMLP flattens before calling). Preserve whatever
+        # shape we were given.
+        orig_shape = hidden_states.shape
+        flat = hidden_states.reshape(-1, experts.hidden_size)
+
+        # ── Detect the routing-weights contract by shape (see docstring) ──
+        if routing_weights.shape[-1] == num_experts:
+            dense_weights = True            # dense variant: index by expert ID
+        elif routing_weights.shape == router_indices.shape:
+            dense_weights = False           # top-k variant: index by position
+        else:
+            raise RuntimeError(
+                f"Unrecognized GPT-OSS routing contract: "
+                f"routing_weights {tuple(routing_weights.shape)}, "
+                f"router_indices {tuple(router_indices.shape)}, "
+                f"num_experts {num_experts}. Inspect the installed "
+                f"transformers GptOssExperts.forward and update "
+                f"patch_expert_forward."
+            )
 
         next_states = torch.zeros_like(flat)
 
         with torch.no_grad():
-            mask = F.one_hot(router_indices, num_classes=num_exp + 1)
-            mask = mask.permute(2, 1, 0)           # [num_exp+1, top_k, num_tokens]
+            # [num_tokens, top_k, num_experts] → [num_experts, top_k, num_tokens]
+            mask = F.one_hot(router_indices, num_classes=num_experts)
+            mask = mask.permute(2, 1, 0)
             expert_hit = (mask.sum(dim=(-1, -2)) > 0).nonzero()
 
         for idx_tensor in expert_hit:
             e = idx_tensor[0].item()
-            if e == num_exp:   # masking slot — skip
-                continue
 
             with torch.no_grad():
-                _, token_idx = torch.where(mask[e])
+                top_k_pos, token_idx = torch.where(mask[e])
 
             current_state = flat[token_idx]        # [T_e, hidden]
 
             # ── Hessian: gate_up input ────────────────────────────────────
             gate_up_gptq[e].add_batch(current_state.detach().float(), None)
 
-            # ── forward: gate_up + SwiGLU ─────────────────────────────────
+            # ── forward: gate_up + clamped SwiGLU (== _apply_gate) ────────
             gate_up = (
                 current_state @ experts.gate_up_proj[e]
                 + experts.gate_up_proj_bias[e]
@@ -212,12 +261,15 @@ def patch_expert_forward(
             # ── Hessian: down input ───────────────────────────────────────
             down_gptq[e].add_batch(gated_output.detach().float(), None)
 
-            # ── forward: down projection ──────────────────────────────────
-            out      = gated_output @ experts.down_proj[e] + experts.down_proj_bias[e]
-            weighted = out * routing_weights[token_idx, e, None]
-            next_states.index_add_(0, token_idx, weighted.to(flat.dtype))
+            # ── forward: down projection + routing weight ─────────────────
+            out = gated_output @ experts.down_proj[e] + experts.down_proj_bias[e]
+            if dense_weights:
+                w = routing_weights[token_idx, e, None]
+            else:
+                w = routing_weights[token_idx, top_k_pos, None]
+            next_states.index_add_(0, token_idx, (out * w).to(flat.dtype))
 
-        return next_states.view(batch_size, -1, experts.hidden_size)
+        return next_states.view(orig_shape)
 
     # Instance-level attribute shadows the class method without affecting
     # other GptOssExperts instances (other layers still have the original).
