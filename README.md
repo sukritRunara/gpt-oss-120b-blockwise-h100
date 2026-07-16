@@ -1,139 +1,162 @@
 # gpt-oss-20b Blockwise-GPTQ → NVFP4 on RunPod H100
 
-Repairing and hardening a blockwise-GPTQ implementation to produce and evaluate an
-**NVFP4 W4A16** quantization of `openai/gpt-oss-20b` on a single **NVIDIA H100 80GB**,
-served with vLLM.
+Repairing and hardening a blockwise-GPTQ implementation to produce and
+evaluate an **NVFP4 W4A16** quantization of `openai/gpt-oss-20b` on a single
+**NVIDIA H100 80GB**, served with vLLM.
 
-> **Status: setup / scaffolding phase.** The engineering work described in the agent
-> handoff has not started yet. Do **not** treat the sub-repo's original "Quick Start"
-> as a safe full-run path — several known P0 correctness/memory issues must be fixed
-> first (see [KNOWN_ISSUES.md](KNOWN_ISSUES.md)). This README documents only what is
-> currently true; run commands will be added as they are verified on this pod.
-
-Note: the GitHub repo is named `gpt-oss-120b-blockwise-h100`, but the current target
+Note: the GitHub repo is named `gpt-oss-120b-blockwise-h100`, but the target
 model is **gpt-oss-20b**.
-
----
 
 ## 1. Goal and non-goals
 
-**Goal:** use the existing `blockwise-gptq` source on one H100 to (1) preserve the
-official MXFP4 checkpoint, (2) dequantize it to a clean BF16 source, (3) repair the
-blockwise-GPTQ path, (4) produce a blockwise-GPTQ NVFP4 artifact and a matched RTN
-NVFP4 control, (5) validate correctness at tensor/logit/task level, and (6) serve and
-benchmark the arms on the same H100 with vLLM.
+**Goal:** starting from the official MXFP4 checkpoint, produce (A) a pinned
+official baseline, (B) a validated dequantized BF16 source, (C) a matched RTN
+NVFP4 control, and (D) a blockwise-GPTQ NVFP4 treatment; validate correctness
+at tensor/logit/task level; serve all arms with vLLM on the same H100 and
+benchmark quality, memory, and serving performance.
 
-**Non-goals:** AWS Trainium/Neuron, native Blackwell FP4 benchmarking, a full MXFP4
-GPTQ exporter, rewriting the repo before a pilot, or publishing checkpoints to HF
-without explicit permission. NVFP4 is *not* claimed to be the optimal H100 format.
+**Non-goals:** AWS Trainium/Neuron, native Blackwell FP4 benchmarking, a full
+MXFP4 GPTQ exporter, publishing checkpoints to HF, or claiming NVFP4 is the
+optimal H100 format. NVFP4 on H100 runs through **weight-only Marlin
+kernels** — memory savings are expected, speedups are not promised, and a
+null/negative speed result is a valid outcome.
 
-See [DECISIONS.md](DECISIONS.md) for the reasoning behind these scope choices.
+## 2. Hardware / environment
 
----
+1× NVIDIA H100 80GB HBM3 (driver 580.126.09, CUDA 13.0), Python 3.12,
+`/workspace` persistent. Environment lockfiles + system manifest: `envs/`.
 
-## 2. Hardware and environment (this pod)
+Two isolated venvs are **mandatory** (their torch versions conflict):
 
-| | |
-|---|---|
-| GPU | 1× NVIDIA H100 80GB HBM3 (no native FP4 Tensor Cores) |
-| Driver / CUDA | 580.126.09 / CUDA 13.0 |
-| Host Python | 3.12.3 |
-| RAM | ~2 TB |
-| Persistent storage | `/workspace` (mfs, ample free space) |
-
-H100 serves NVFP4 through a weight-only kernel (e.g. Marlin), subject to the pinned
-vLLM version. A speedup is **not** assumed; a null/negative result is valid.
-
----
-
-## 3. Source-model provenance
-
-The official `openai/gpt-oss-20b` checkpoint stores expert weights in **MXFP4**. We
-decode those to BF16 and use the result as the quantizer's source:
-
-```
-official MXFP4 checkpoint  →  exact MXFP4 decode  →  BF16 tensors (the "BF16 source")
+```bash
+scripts/bootstrap_quant_env.sh    # .venv-quant: torch 2.13, transformers 5.14
+scripts/bootstrap_serve_env.sh    # .venv-serve: vllm 0.25.1 (torch 2.11)
+scripts/capture_system_manifest.sh
+# serving additionally requires the local vLLM patch plugin:
+uv pip install --python .venv-serve/bin/python -e vllm-gptoss-nvfp4-plugin
 ```
 
-This is **not** the original pre-MXFP4 master checkpoint, so the experiment is a
-**transquantization**: official MXFP4 → dequantized BF16 → blockwise-GPTQ NVFP4.
-Accurate names are used everywhere (e.g. `gpt-oss-20b-mxfp4-dequant-bf16`); the
-dequantized source is never labeled "original BF16".
+## 3. Provenance (read before interpreting any result)
 
----
-
-## 4. Experimental arms
-
-| ID | Model | Purpose |
-|----|-------|---------|
-| A | Official `openai/gpt-oss-20b` MXFP4 | Real-world HF deployment baseline |
-| B | Official MXFP4 decoded to BF16 | Exact source into the quantizer |
-| C | RTN NVFP4 from B | Same format/packing path, no GPTQ (control) |
-| D | Blockwise-GPTQ NVFP4 from B | Primary treatment |
-
-Key comparisons: **D vs C** (pure GPTQ benefit at fixed format), **D vs B** (NVFP4
-conversion cost), **D vs A** (custom artifact vs official), **A vs B** (validates the
-dequantization). C and D must use identical tensor masks, block sizes, scale rules,
-packing, and vLLM path — only the algorithm differs.
-
----
-
-## 5. Repository layout
+The official checkpoint stores expert weights in MXFP4. Arm B is its **exact
+decode** to BF16 — *not* the unavailable pre-MXFP4 master. Everything
+downstream is a **transquantization** experiment:
 
 ```
-.
-├── README.md                 # this file
-├── PROGRESS.md               # chronological work log (proof required per entry)
-├── DECISIONS.md              # non-obvious decisions + rationale
-├── KNOWN_ISSUES.md           # open P0/P1/P2 issues from the handoff
-├── H100_RUNPOD_..._HANDOFF.md# the full project specification / engineering contract
-└── blockwise-gptq-main/      # the blockwise-GPTQ source being repaired
-    ├── opteam-blockwise-gptq/#   core library (gptq, quantizer, expert dispatch, ...)
-    ├── tests/                #   stageN_*.py pipeline + internalTests/ property tests
-    ├── scripts/              #   download_model.sh, setup_runtime.sh
-    ├── results/              #   prior run outputs (DeepSeek-V2-Lite examples)
-    └── requirements.txt
+official MXFP4 (A) → dequant BF16 (B) → {RTN (C), blockwise-GPTQ (D)} NVFP4
 ```
 
-The authoritative specification is
-[H100_RUNPOD_GPT_OSS_20B_BLOCKWISE_GPTQ_AGENT_HANDOFF.md](H100_RUNPOD_GPT_OSS_20B_BLOCKWISE_GPTQ_AGENT_HANDOFF.md).
-For details on the sub-repo's stages and formats, see
-[blockwise-gptq-main/README.md](blockwise-gptq-main/README.md).
+Details + validation evidence: `docs/DEQUANTIZATION_PROVENANCE.md`,
+`results/dequant_validation.json` (decode is bit-exact for every expert
+tensor; all other tensors byte-identical).
 
----
+## 4. The four arms
 
-## 6. Planned workflow (not yet runnable)
+| ID | Path under `models/` | Role |
+|----|----------------------|------|
+| A | `gpt-oss-20b-official-mxfp4` | official deployment baseline |
+| B | `gpt-oss-20b-mxfp4-dequant-bf16` | quantizer source |
+| C | `gpt-oss-20b-mxfp4-dequant-rtn-nvfp4[-packed]` | matched RTN control |
+| D | `gpt-oss-20b-mxfp4-dequant-blockwise-gptq-nvfp4[-packed]` | treatment |
 
-Per the handoff, work proceeds in this order — each step gated on the previous one:
+C and D share the identical tensor mask, scale rules (D-010), exact-artifact
+pipeline, exporter, and serving path — only the algorithm differs.
+See `docs/EXPERIMENT_DESIGN.md`.
 
+## 5. Repository architecture
+
+See `docs/ARCHITECTURE.md`. Key invariants: memory-bounded resumable Hessian
+collection (P0.4), exact code/scale capture verified bit-exact twice (P0.6),
+complete per-tensor disposition manifest (P0.5), fail-closed everywhere, and
+a source-verified vLLM packing contract (`docs/VLLM_NVFP4_CONTRACT.md`).
+
+## 6. Commands (all verified on this pod)
+
+Activate: quant work uses `.venv-quant/bin/python`; serving uses
+`.venv-serve` (`scripts/serve_vllm.sh` handles PATH).
+
+**Download + pin arm A** (idempotent, provenance manifest):
+```bash
+.venv-quant/bin/python scripts/download_official_model.py
 ```
-static audit → env bootstrap → focused unit tests → dequantization validation
-→ tiny end-to-end pilot → packed-load validation → RTN/GPTQ matched pilot
-→ full calibration → final serving benchmarks
+
+**Dequantize + validate arm B:**
+```bash
+.venv-quant/bin/python scripts/dequantize_gpt_oss_20b.py
+.venv-quant/bin/python scripts/validate_dequantized_source.py
 ```
 
-Two isolated Python environments will be created (quant deps and vLLM deps conflict):
+**Unit/property tests** (CPU-safe, run from any cwd):
+```bash
+.venv-quant/bin/python -m pytest -q blockwise-gptq-main/tests/internalTests \
+    --ignore=blockwise-gptq-main/tests/internalTests/test_vLLM_deploy_quantized_model.py
+.venv-quant/bin/python blockwise-gptq-main/tests/stage1_nvfp4_unit_tests.py
+.venv-quant/bin/python blockwise-gptq-main/tests/stage2_nvfp4_algorithm_tests.py
+.venv-quant/bin/python blockwise-gptq-main/tests/stage3_gpt_oss_shape_tests.py
+```
 
-- `.venv-quant` — Transformers load + MXFP4 dequant, calibration, blockwise GPTQ,
-  QDQ validation, export, tests.
-- `.venv-serve` — vLLM serving, OpenAI-compatible API tests, async benchmarks.
+**Pilot (tiny end-to-end, §13 exit gates)** — must pass before any full run:
+```bash
+bash scripts/run_pilot.sh          # GPTQ 32×512 → pack → vLLM gates → RTN → A/B smoke
+```
 
-Verified activation/run commands will be added here as each stage is validated on the
-pod. Until then, see the handoff for the intended commands.
+**Full quantization (arms D then C, resumable):**
+```bash
+bash scripts/run_full.sh
+```
 
----
+**Quality evaluation:**
+```bash
+# perplexity (diagnostic): baseline once, then per QDQ arm
+.venv-quant/bin/python blockwise-gptq-main/tests/stage4_baseline_perplexity.py \
+    --model_path models/gpt-oss-20b-mxfp4-dequant-bf16
+.venv-quant/bin/python blockwise-gptq-main/tests/stage6_eval_perplexity.py \
+    --model_path models/gpt-oss-20b-mxfp4-dequant-blockwise-gptq-nvfp4
+# logit-level paired metrics (B reference)
+.venv-quant/bin/python scripts/logit_eval.py \
+    --reference B=models/gpt-oss-20b-mxfp4-dequant-bf16 \
+    --candidates C=models/gpt-oss-20b-mxfp4-dequant-rtn-nvfp4 \
+                 D=models/gpt-oss-20b-mxfp4-dequant-blockwise-gptq-nvfp4 \
+    --out results/quality/logit_eval.json
+# task-level suite (Harmony chat, greedy)
+.venv-quant/bin/python scripts/task_eval.py --model <arm-path> --name <arm> \
+    --out results/quality/task_<arm>.json
+```
 
-## 7. Progress and issues
+**Serving (one arm at a time, fresh server, identical flags):**
+```bash
+scripts/serve_vllm.sh configs/serve-gptq-nvfp4.env      # or the other 3 envs
+# then, in another shell:
+.venv-serve/bin/python scripts/serving_benchmark.py \
+    --model gpt-oss-20b-mxfp4-dequant-blockwise-gptq-nvfp4 \
+    --label final-rep1 --suites prefill decode mixed \
+    --warmup 10 --requests 50 --reps 1
+```
 
-- Current status and history: [PROGRESS.md](PROGRESS.md)
-- Open blockers and risks: [KNOWN_ISSUES.md](KNOWN_ISSUES.md)
-- Decisions and rationale: [DECISIONS.md](DECISIONS.md)
+**Resume behavior:** stage 5 resumes from the per-layer Hessian cache
+(SHA-256-verified manifest; calibration tokens are cached immutably and
+hash-checked). Downloads and the dequantizer detect complete outputs and
+skip. Interrupted serving benchmarks are per-cell JSONL — rerun the cell.
 
----
+## 7. Outputs
+
+- `models/` — checkpoints and packed artifacts (gitignored; each carries a
+  provenance/packing manifest inside the directory)
+- `results/` — validation, quality, and serving results (JSON/JSONL)
+- `logs/` — timestamped logs for every stage
+- `PROGRESS.md` / `DECISIONS.md` / `KNOWN_ISSUES.md` — the project record
 
 ## 8. Known limitations
 
-- NVFP4 is **non-native** on H100; expect a weight-only kernel, not FP4 Tensor Cores.
-- The "BF16 source" is a dequantized MXFP4 checkpoint, not an original master (see §3).
-- The source pipeline has documented P0 correctness/memory issues still to be fixed
-  before any full run — see [KNOWN_ISSUES.md](KNOWN_ISSUES.md).
+- NVFP4 is non-native on H100: weight-only Marlin path (both linear and
+  FusedMoE experts), confirmed from vLLM source and server logs.
+- Arm B is a decoded-MXFP4 source (see §3) — quality deltas are measured
+  against it, not against the original master.
+- Serving arm A uses vLLM's native MXFP4 path (different kernels than C/D).
+- Three vLLM 0.25.1 upstream gaps are patched by `vllm-gptoss-nvfp4-plugin`
+  (see `docs/VLLM_NVFP4_CONTRACT.md` §6 and `docs/TROUBLESHOOTING.md`).
+
+## 9. Current results
+
+See `PROGRESS.md` (chronological, evidence-linked) and the final report
+(`docs/REPORT.md`, produced after the benchmark phase).
