@@ -87,8 +87,9 @@ def main():
     records, correct_by_cat, count_by_cat = [], {}, {}
     for cat, q, accept in ITEMS:
         msgs = [{"role": "user", "content": q}]
-        ids = tok.apply_chat_template(msgs, add_generation_prompt=True,
-                                      return_tensors="pt").cuda()
+        enc = tok.apply_chat_template(msgs, add_generation_prompt=True,
+                                      return_tensors="pt", return_dict=True)
+        ids = enc["input_ids"].cuda()
         gen = model.generate(ids, max_new_tokens=args.max_new_tokens,
                              do_sample=False, pad_token_id=tok.eos_token_id)
         raw = tok.decode(gen[0, ids.shape[1]:], skip_special_tokens=False)
