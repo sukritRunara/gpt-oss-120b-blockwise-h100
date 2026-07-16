@@ -41,3 +41,6 @@ env.sh
 
 # OS junk
 .DS_Store
+
+# pip/http caches (accidentally committed once; removed in follow-up)
+.cache/
