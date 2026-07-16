@@ -5,6 +5,38 @@ without pointing to the test, log, or artifact that proves it.
 
 ---
 
+## 2026-07-16 17:00 UTC — NIGHT-1 COMPLETE: all arms built, quality + serving measured
+
+**Status:** complete — see docs/REPORT.md for the full write-up
+
+**Full run (arm D):** 512×2048 C4, 45.6 min, collection peak 49.3 GB
+(group=4, D-012), **1632/1632 tensors GPTQ_NVFP4 (100%, zero fallbacks)**,
+packed 13 GB, all artifacts bit-exact-verified twice.
+**Arm C (matched RTN):** same mask/scales/exporter, 1632/1632, 13 GB packed.
+
+**Quality (authoritative: logit fidelity to B on held-out prompts):**
+- D (GPTQ): KL 0.0113, cos_min 0.99743, top-1 1.00 → **2.24× lower KL than C**
+- C (RTN): KL 0.0254, cos_min 0.99466, top-1 1.00
+- Task suite: B 39/40, C 40/40, D 40/40 — quantization-transparent at task level
+- Perplexity: unfit metric for this Harmony model — RTN "improves" raw-text
+  ppl while being farther from the source; harness null test Δ=0.0000 proves
+  the pipeline exact; documented in REPORT §2 with evidence files.
+
+**Serving (vLLM, TP=1, identical flags, 5+30 req/cell, zero failures):**
+- Weights in VRAM: A 13.02 GiB / B 39.15 / D-hybrid 38.22
+- A (native MXFP4) leads throughput at high concurrency (3.7k tok/s c=64);
+  D-hybrid ≈ B (expected null: experts are BF16 due to P0.10)
+- results/serving/comparison_night1.{json,md} + per-request JSONL + telemetry
+
+**Fixes landed during the night:** wikitext dataset namespacing,
+transformers-5.x chat-template BatchEncoding, vllm launcher flag,
+stage-6 explicit baseline paths, eval-orchestrator resume.
+
+**Open:** P0.10 (upstream vLLM Marlin NVFP4-MoE corruption at E=32×2880) —
+fully isolated with kept repro checkpoints; upstream issue candidate.
+
+---
+
 ## 2026-07-16 13:45 UTC — Pilot verdict; upstream Marlin MoE bug isolated (P0.10); full run launched
 
 **Status:** full 512×2048 run in progress

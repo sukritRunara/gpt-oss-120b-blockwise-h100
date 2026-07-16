@@ -1,7 +1,25 @@
 # Final report: gpt-oss-20b blockwise-GPTQ → NVFP4 on H100
 
-> Status: DRAFT — quality/serving numbers being filled by the night-1 run.
-> Every number cites its results file; see PROGRESS.md for the run log.
+> Status: night-1 COMPLETE (2026-07-16/17). Every number cites its results
+> file; see PROGRESS.md for the chronological evidence trail.
+
+## Executive summary
+
+1. **GPTQ beats matched RTN on fidelity to the source at identical NVFP4
+   format**: KL divergence 2.24× lower (0.0113 vs 0.0254), worst-case logit
+   cosine 0.99743 vs 0.99466, both with perfect next-token top-1 agreement.
+   Task-level capability is at ceiling for BOTH 4-bit arms (40/40).
+2. **Memory**: the full-NVFP4 artifact is 13 GB vs 39 GB BF16 (3.0×) —
+   byte-parity with the official MXFP4's 13.0 GiB serving footprint.
+3. **Serving**: arms A/B/D-hybrid benchmarked cleanly (zero failed requests,
+   54 cells). Full-NVFP4 expert serving is blocked by an isolated,
+   reproducible UPSTREAM vLLM 0.25.1 Marlin-MoE kernel bug at GPT-OSS's
+   exact dimensions (P0.10) — our artifacts are proven correct
+   independently. No unproven speed claims are made; the weight-only
+   hybrid's null speed result is reported as-is.
+4. Raw-text perplexity proved unfit as a quality metric for this
+   Harmony-tuned model (validated with a harness null test) — documented
+   with evidence; conclusions rest on logit fidelity + task accuracy.
 
 ## 1. What was built
 
@@ -102,10 +120,46 @@ dense linears serve correctly (0.90 greedy agreement vs QDQ). Consequently:
   fix (three concrete bugs already patched via our plugin; the fourth —
   the corruption — requires a kernel-level fix).
 
-### Serving results (suites: prefill 1k/8k×1, decode 128×256, mixed 1k/8k×256)
-_results/serving/*/summary.json; per-request JSONL alongside_
+### Serving results (night-1: 5 warmup + 30 measured req/cell, 1 repetition)
+_results/serving/*/summary.json + per-request JSONL + gpu_telemetry.csv;
+comparison table: results/serving/comparison_night1.{json,md}. Reduced sample
+counts vs the final protocol (§18: ≥200/cell × 3 reps) are documented here per
+the handoff; all raw records are retained for extension._
 
-TBD table: TTFT p50/p99, ITL, output tok/s by concurrency, VRAM after load.
+**Weights memory (vLLM "Model loading took", identical 0.9 GPU-utilization):**
+
+| Arm | Weights in VRAM | KV-cache headroom |
+|-----|-----------------|-------------------|
+| A (official MXFP4) | **13.02 GiB** | 54.6 GiB |
+| B (BF16) | 39.15 GiB | ~28 GiB |
+| D-hybrid (attn NVFP4 + experts BF16) | 38.22 GiB | ~28 GiB |
+
+The full-NVFP4 D artifact is 13 GB on disk — byte-parity with arm A — and
+would reclaim ≈26 GiB of KV headroom over BF16 if the upstream Marlin MoE bug
+(P0.10) were fixed; with experts forced to BF16 for serving, the hybrid only
+realizes the attention share (~1 GiB).
+
+**Throughput/latency (selected cells; TTFT p50 / output tok/s):**
+
+| Cell | A (MXFP4) | B (BF16) | D-hybrid |
+|------|-----------|----------|----------|
+| decode 128→256, c=1 | 0.023s / 305 | 0.031s / 265 | 0.032s / 256 |
+| decode 128→256, c=64 | 0.164s / 3674 | 0.165s / 1993 | 0.185s / 1901 |
+| mixed 1k→256, c=32 | 0.356s / 3268 | 0.412s / 1851 | 0.474s / 1868 |
+| mixed 8k→256, c=8 | 0.553s / 880 | 0.649s / 600 | 0.800s / 567 |
+| prefill 8k→1, c=1 (TTFT) | 0.147s | 0.170s | 0.195s |
+
+Zero failed requests across all 54 cells (3 arms × 18). Observations:
+- Arm A's native MXFP4 MoE path is the throughput leader at high concurrency
+  (~1.8× B at c=64 decode) — its experts run quantized compute, not just
+  quantized storage.
+- **D-hybrid ≈ B within noise at low concurrency and slightly slower at long
+  context** (Marlin weight-only dequant overhead on attention at 8k: ~15-20%
+  TTFT). This is the expected null result for a weight-only path serving
+  mostly-BF16 weights — reported as such, per the handoff ("a null or
+  negative speed result is acceptable").
+- One anomaly retained in raw data: arm A's decode c=32 cell shows TTFT p50
+  4.2s (queue-burst artifact; c=64 is 0.16s); rerun before quoting A's c=32.
 
 ## 4. Interpretation guide
 

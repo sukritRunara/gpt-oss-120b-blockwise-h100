@@ -156,7 +156,13 @@ skip. Interrupted serving benchmarks are per-cell JSONL — rerun the cell.
 - Three vLLM 0.25.1 upstream gaps are patched by `vllm-gptoss-nvfp4-plugin`
   (see `docs/VLLM_NVFP4_CONTRACT.md` §6 and `docs/TROUBLESHOOTING.md`).
 
-## 9. Current results
+## 9. Current results (night-1 complete)
 
-See `PROGRESS.md` (chronological, evidence-linked) and the final report
-(`docs/REPORT.md`, produced after the benchmark phase).
+**Headline:** blockwise GPTQ is 2.24× closer to the BF16 source than matched
+RTN at identical NVFP4 format (KL 0.0113 vs 0.0254; top-1 1.00 for both;
+task suite at ceiling for both). The full-NVFP4 artifact is 13 GB vs 39 GB
+BF16. Full-NVFP4 expert *serving* is blocked by an isolated upstream vLLM
+0.25.1 Marlin-MoE kernel bug (KNOWN_ISSUES P0.10, with repro checkpoints);
+serving comparisons for A/B/D-hybrid completed with zero failed requests.
+
+Full write-up: `docs/REPORT.md`. Evidence trail: `PROGRESS.md`.
