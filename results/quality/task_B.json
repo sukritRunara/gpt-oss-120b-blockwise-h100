@@ -1,0 +1,452 @@
+{
+  "model": "/workspace/models/gpt-oss-20b-mxfp4-dequant-bf16",
+  "name": "B",
+  "created_utc": "2026-07-16T15:33:59Z",
+  "overall_accuracy": 0.975,
+  "n_items": 40,
+  "by_category": {
+    "knowledge": {
+      "correct": 10,
+      "total": 10,
+      "accuracy": 1.0
+    },
+    "math": {
+      "correct": 9,
+      "total": 10,
+      "accuracy": 0.9
+    },
+    "code": {
+      "correct": 10,
+      "total": 10,
+      "accuracy": 1.0
+    },
+    "instruct": {
+      "correct": 10,
+      "total": 10,
+      "accuracy": 1.0
+    }
+  },
+  "items": [
+    {
+      "category": "knowledge",
+      "question": "What is the capital of Japan? Answer in one word.",
+      "accept": [
+        "tokyo"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"What is the capital of Japan? Answer in one word.\" The answer: \"Tokyo\".<|end|><|start|>assistant<|channel|>final<|message|>Tokyo<|return|>",
+      "final_answer": "Tokyo",
+      "correct": true
+    },
+    {
+      "category": "knowledge",
+      "question": "Which planet is known as the Red Planet?",
+      "accept": [
+        "mars"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"Which planet is known as the Red Planet?\" The answer: Mars. Provide concise answer.<|end|><|start|>assistant<|channel|>final<|message|>The planet known as the Red Planet is **Mars**.<|return|>",
+      "final_answer": "The planet known as the Red Planet is **Mars**.",
+      "correct": true
+    },
+    {
+      "category": "knowledge",
+      "question": "Who wrote the play Romeo and Juliet?",
+      "accept": [
+        "shakespeare"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"Who wrote the play Romeo and Juliet?\" The answer: William Shakespeare. Provide concise answer.<|end|><|start|>assistant<|channel|>final<|message|>The play *Romeo and Juliet* was written by **William Shakespeare**.<|return|>",
+      "final_answer": "The play *Romeo and Juliet* was written by **William Shakespeare**.",
+      "correct": true
+    },
+    {
+      "category": "knowledge",
+      "question": "What is the largest ocean on Earth?",
+      "accept": [
+        "pacific"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"What is the largest ocean on Earth?\" The answer: The Pacific Ocean. Provide explanation.<|end|><|start|>assistant<|channel|>final<|message|>The largest ocean on Earth is the **Pacific Ocean**. It covers about 63 million square miles (163 million square kilometers), which is roughly one\u2011third of the planet\u2019s total oceanic area. It stretches from the Arctic in the north to the Southern Ocean in the south, and from Asia and Australia in the west to the Americas in the east.<|return|>",
+      "final_answer": "The largest ocean on Earth is the **Pacific Ocean**. It covers about 63 million square miles (163 million square kilometers), which is roughly one\u2011third of the planet\u2019s total oceanic area. It stretches from the Arctic in the north to the Southern Ocean in the south, and from Asia and Australia in the west to the Americas in the east.",
+      "correct": true
+    },
+    {
+      "category": "knowledge",
+      "question": "In what year did World War II end?",
+      "accept": [
+        "1945"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"In what year did World War II end?\" The answer: 1945. Provide concise answer.<|end|><|start|>assistant<|channel|>final<|message|>World War\u202fII ended in **1945**.<|return|>",
+      "final_answer": "World War\u202fII ended in **1945**.",
+      "correct": true
+    },
+    {
+      "category": "knowledge",
+      "question": "What gas do plants absorb from the atmosphere?",
+      "accept": [
+        "carbon dioxide",
+        "co2"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"What gas do plants absorb from the atmosphere?\" The answer: CO2 (carbon dioxide). Also they absorb water vapor and nutrients from soil, but the gas is CO2. They also release O2. So answer: carbon dioxide. Provide explanation.<|end|><|start|>assistant<|channel|>final<|message|>Plants absorb **carbon dioxide (CO\u2082)** from the atmosphere during photosynthesis. They take in CO\u2082 through tiny pores on their leaves called stomata, convert it into sugars using sunlight, and release oxygen (O\u2082) as a by\u2011product.<|return|>",
+      "final_answer": "Plants absorb **carbon dioxide (CO\u2082)** from the atmosphere during photosynthesis. They take in CO\u2082 through tiny pores on their leaves called stomata, convert it into sugars using sunlight, and release oxygen (O\u2082) as a by\u2011product.",
+      "correct": true
+    },
+    {
+      "category": "knowledge",
+      "question": "What is the chemical symbol for gold?",
+      "accept": [
+        "au"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"What is the chemical symbol for gold?\" The answer: Au. Provide concise answer.<|end|><|start|>assistant<|channel|>final<|message|>The chemical symbol for gold is **Au**.<|return|>",
+      "final_answer": "The chemical symbol for gold is **Au**.",
+      "correct": true
+    },
+    {
+      "category": "knowledge",
+      "question": "Which country has the largest population in the world?",
+      "accept": [
+        "india",
+        "china"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"Which country has the largest population in the world?\" The answer: China (though India is close). As of 2023, China has about 1.4B, India about 1.4B too. But India overtook China in 2023? Actually India overtook China in 2023. So the largest population is India. But the question might be older. But we should give up-to-date answer: India. Provide context.<|end|><|start|>assistant<|channel|>final<|message|>As of the most recent estimates (2024\u20112025), **India** is the country with the largest population in the world, with a population of roughly 1.4\u202fbillion people. China follows closely, with a population of about 1.4\u202fbillion as well, but India has surpassed China in total population since 2023.<|return|>",
+      "final_answer": "As of the most recent estimates (2024\u20112025), **India** is the country with the largest population in the world, with a population of roughly 1.4\u202fbillion people. China follows closely, with a population of about 1.4\u202fbillion as well, but India has surpassed China in total population since 2023.",
+      "correct": true
+    },
+    {
+      "category": "knowledge",
+      "question": "What organ pumps blood through the human body?",
+      "accept": [
+        "heart"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"What organ pumps blood through the human body?\" The answer: the heart. They might want a brief explanation. Provide answer.<|end|><|start|>assistant<|channel|>final<|message|>The organ that pumps blood throughout the human body is the **heart**. It contracts rhythmically to circulate blood, delivering oxygen and nutrients to tissues and removing waste products.<|return|>",
+      "final_answer": "The organ that pumps blood throughout the human body is the **heart**. It contracts rhythmically to circulate blood, delivering oxygen and nutrients to tissues and removing waste products.",
+      "correct": true
+    },
+    {
+      "category": "knowledge",
+      "question": "How many continents are there on Earth?",
+      "accept": [
+        "seven",
+        "7"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"How many continents are there on Earth?\" This is a straightforward question. The answer: 7 continents: Asia, Africa, North America, South America, Antarctica, Europe, Australia (or Oceania). Some people consider 6 continents if combining Europe and Asia as Eurasia, or combining North and South America as America. But standard answer: 7. Provide explanation.<|end|><|start|>assistant<|channel|>final<|message|>There are **seven continents** on Earth:\n\n| Continent | Approximate area | Notable facts |\n|-----------|------------------|---------------|\n| **Asia** | ~44.58\u202fmillion km\u00b2 | Largest continent, home to the world\u2019s most populous country (China) and the highest point (Mount Everest). |\n| **Africa** | ~30.37\u202fmillion km\u00b2 | Second\u2011largest, richest in biodiversity, and the birthplace of humanity. |\n| **North America** | ~24.71\u202fmillion km\u00b2 | Includes the United States, Canada, and Mexico; known for its varied climates. |\n| **South America** | ~17.84\u202fmillion km\u00b2 | Contains the Amazon rainforest and the Andes mountain range. |\n| **Antarctica** | ~14.00\u202fmillion km\u00b2 | Coldest, driest, and windiest continent; almost entirely ice\u2011covered. |\n| **Europe** | ~10.18\u202fmillion km\u00b2 | Smallest continent by area, but densely populated and historically influential. |\n| **Australia (Oceania)** | ~8.56\u202fmillion km\u00b2 | Often grouped with the Pacific islands as \u201cOceania\u201d; includes mainland Australia, New\u202fZealand, and many island nations. |\n\n> **Why 7?**  \n> The division into seven continents is a convention that dates back to ancient Greek geography and has been widely adopted in modern education and cart",
+      "final_answer": "There are **seven continents** on Earth:\n\n| Continent | Approximate area | Notable facts |\n|-----------|------------------|---------------|\n| **Asia** | ~44.58\u202fmillion km\u00b2 | Largest continent, home to the world\u2019s most populous country (China) and the highest point (Mount Everest). |\n| **Africa** | ~30.37\u202fmillion km\u00b2 | Second\u2011largest, richest in biodiversity, and the birthplace of humanity. |\n| **North America** | ~24.71\u202fmillion km\u00b2 | Includes the United States, Canada, and Mexico; known for its ",
+      "correct": true
+    },
+    {
+      "category": "math",
+      "question": "What is 17 multiplied by 23?",
+      "accept": [
+        "391"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"What is 17 multiplied by 23?\" They want the product. 17*23 = 391. Let's double-check: 20*17=340, 3*17=51, sum=391. Yes. So answer: 391.<|end|><|start|>assistant<|channel|>final<|message|>17 multiplied by 23 equals **391**.<|return|>",
+      "final_answer": "17 multiplied by 23 equals **391**.",
+      "correct": true
+    },
+    {
+      "category": "math",
+      "question": "What is the square root of 144?",
+      "accept": [
+        "12"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"What is the square root of 144?\" The answer is 12. But we should consider if they want positive or negative? Usually the principal square root is 12. We can mention \u00b112 if they want both. But likely answer: 12. Provide explanation.<|end|><|start|>assistant<|channel|>final<|message|>The square root of\u202f144\u202fis\u202f**12** (since \\(12 \\times 12 = 144\\)).  \nIf you\u2019re looking for all real solutions to \\(x^2 = 144\\), they are \\(x = \\pm 12\\).<|return|>",
+      "final_answer": "The square root of\u202f144\u202fis\u202f**12** (since \\(12 \\times 12 = 144\\)).  \nIf you\u2019re looking for all real solutions to \\(x^2 = 144\\), they are \\(x = \\pm 12\\).",
+      "correct": true
+    },
+    {
+      "category": "math",
+      "question": "If x + 7 = 19, what is x?",
+      "accept": [
+        "12"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: If x + 7 = 19, what is x? Solve: x = 19 - 7 = 12. Provide answer.<|end|><|start|>assistant<|channel|>final<|message|>\\(x = 12\\).<|return|>",
+      "final_answer": "\\(x = 12\\).",
+      "correct": true
+    },
+    {
+      "category": "math",
+      "question": "What is 15% of 240?",
+      "accept": [
+        "36"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"What is 15% of 240?\" They want the calculation. 15% of 240 = 0.15 * 240 = 36. So answer: 36.<|end|><|start|>assistant<|channel|>final<|message|>15\u202f% of 240 is \\(0.15 \\times 240 = 36\\).<|return|>",
+      "final_answer": "15\u202f% of 240 is \\(0.15 \\times 240 = 36\\).",
+      "correct": true
+    },
+    {
+      "category": "math",
+      "question": "What is 2 to the power of 10?",
+      "accept": [
+        "1024"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"What is 2 to the power of 10?\" That's 2^10 = 1024. Provide answer.<|end|><|start|>assistant<|channel|>final<|message|>2 to the power of 10 is **1,024**.<|return|>",
+      "final_answer": "2 to the power of 10 is **1,024**.",
+      "correct": false
+    },
+    {
+      "category": "math",
+      "question": "A rectangle has sides 8 and 5. What is its area?",
+      "accept": [
+        "40"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"A rectangle has sides 8 and 5. What is its area?\" It's a simple multiplication: 8*5 = 40. Provide answer.<|end|><|start|>assistant<|channel|>final<|message|>The area of a rectangle is the product of its length and width.  \n\\( \\text{Area} = 8 \\times 5 = 40 \\).\n\nSo the rectangle\u2019s area is **40 square units**.<|return|>",
+      "final_answer": "The area of a rectangle is the product of its length and width.  \n\\( \\text{Area} = 8 \\times 5 = 40 \\).\n\nSo the rectangle\u2019s area is **40 square units**.",
+      "correct": true
+    },
+    {
+      "category": "math",
+      "question": "What is 1000 divided by 8?",
+      "accept": [
+        "125"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"What is 1000 divided by 8?\" They want the result. 1000/8 = 125. So answer: 125. Probably just answer.<|end|><|start|>assistant<|channel|>final<|message|>1000 divided by 8 equals **125**.<|return|>",
+      "final_answer": "1000 divided by 8 equals **125**.",
+      "correct": true
+    },
+    {
+      "category": "math",
+      "question": "What is the sum of the first 10 positive integers?",
+      "accept": [
+        "55"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"What is the sum of the first 10 positive integers?\" That's a simple arithmetic series: 1+2+...+10 = 55. Provide answer.<|end|><|start|>assistant<|channel|>final<|message|>The sum of the first 10 positive integers is\n\n\\[\n1+2+3+4+5+6+7+8+9+10 = 55.\n\\]<|return|>",
+      "final_answer": "The sum of the first 10 positive integers is\n\n\\[\n1+2+3+4+5+6+7+8+9+10 = 55.\n\\]",
+      "correct": true
+    },
+    {
+      "category": "math",
+      "question": "Convert 3/4 to a decimal.",
+      "accept": [
+        "0.75",
+        ".75"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"Convert 3/4 to a decimal.\" That's straightforward: 3 divided by 4 = 0.75. So answer: 0.75. Probably just that.<|end|><|start|>assistant<|channel|>final<|message|>\\( \\displaystyle \\frac{3}{4} = 0.75 \\)<|return|>",
+      "final_answer": "\\( \\displaystyle \\frac{3}{4} = 0.75 \\)",
+      "correct": true
+    },
+    {
+      "category": "math",
+      "question": "What is 99 plus 47?",
+      "accept": [
+        "146"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"What is 99 plus 47?\" It's a simple arithmetic addition. 99 + 47 = 146. So answer: 146.<|end|><|start|>assistant<|channel|>final<|message|>99\u202f+\u202f47\u202f=\u202f146.<|return|>",
+      "final_answer": "99\u202f+\u202f47\u202f=\u202f146.",
+      "correct": true
+    },
+    {
+      "category": "code",
+      "question": "In Python, what built-in function returns the number of items in a list?",
+      "accept": [
+        "len"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"In Python, what built-in function returns the number of items in a list?\" The answer: len(). So respond: len(list). Provide explanation.<|end|><|start|>assistant<|channel|>final<|message|>The built\u2011in function is **`len()`**.  \nIt returns the number of elements in a list (or any other iterable):\n\n```python\nmy_list = [1, 2, 3, 4]\ncount = len(my_list)   # count == 4\n```\n\n`len()` works for lists, tuples, strings, dictionaries, sets, etc.<|return|>",
+      "final_answer": "The built\u2011in function is **`len()`**.  \nIt returns the number of elements in a list (or any other iterable):\n\n```python\nmy_list = [1, 2, 3, 4]\ncount = len(my_list)   # count == 4\n```\n\n`len()` works for lists, tuples, strings, dictionaries, sets, etc.",
+      "correct": true
+    },
+    {
+      "category": "code",
+      "question": "What does SQL SELECT DISTINCT do? Answer briefly.",
+      "accept": [
+        "duplicate",
+        "unique"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"What does SQL SELECT DISTINCT do? Answer briefly.\" So we need a concise answer: SELECT DISTINCT returns unique rows, eliminating duplicates. It selects distinct values from columns. So answer: It returns unique rows, removing duplicates. Provide brief.<|end|><|start|>assistant<|channel|>final<|message|>`SELECT DISTINCT` returns only unique rows from the result set, eliminating any duplicate rows that would otherwise appear. It ensures each row in the output is distinct across the selected columns.<|return|>",
+      "final_answer": "`SELECT DISTINCT` returns only unique rows from the result set, eliminating any duplicate rows that would otherwise appear. It ensures each row in the output is distinct across the selected columns.",
+      "correct": true
+    },
+    {
+      "category": "code",
+      "question": "In Python, what keyword defines a function?",
+      "accept": [
+        "def"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"In Python, what keyword defines a function?\" They likely want the keyword \"def\". So answer: def. Provide explanation.<|end|><|start|>assistant<|channel|>final<|message|>In Python, the keyword that defines a function is **`def`**.\n\n```python\ndef my_function(arg1, arg2):\n    # function body\n    return arg1 + arg2\n```\n\n- `def` starts the function definition.\n- It is followed by the function name, parentheses with optional parameters, and a colon.\n- The indented block that follows contains the function\u2019s code.<|return|>",
+      "final_answer": "In Python, the keyword that defines a function is **`def`**.\n\n```python\ndef my_function(arg1, arg2):\n    # function body\n    return arg1 + arg2\n```\n\n- `def` starts the function definition.\n- It is followed by the function name, parentheses with optional parameters, and a colon.\n- The indented block that follows contains the function\u2019s code.",
+      "correct": true
+    },
+    {
+      "category": "code",
+      "question": "What is the output of print(2 ** 3) in Python?",
+      "accept": [
+        "8"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"What is the output of print(2 ** 3) in Python?\" It's a simple question: 2 ** 3 is exponentiation, 2^3 = 8. So print(2 ** 3) outputs 8. The answer: 8. Probably mention that it prints 8.<|end|><|start|>assistant<|channel|>final<|message|>The expression `2 ** 3` evaluates to 8 (since 2 raised to the power of 3 is 8). So:\n\n```python\nprint(2 ** 3)\n```\n\nwill output:\n\n```\n8\n```\n<|return|>",
+      "final_answer": "The expression `2 ** 3` evaluates to 8 (since 2 raised to the power of 3 is 8). So:\n\n```python\nprint(2 ** 3)\n```\n\nwill output:\n\n```\n8\n```\n",
+      "correct": true
+    },
+    {
+      "category": "code",
+      "question": "Which HTTP method is idempotent: POST or PUT?",
+      "accept": [
+        "put"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"Which HTTP method is idempotent: POST or PUT?\" They want to know which method is idempotent. The answer: PUT is idempotent, POST is not. Provide explanation. Also mention that idempotent means same result on repeated calls. Provide details.<|end|><|start|>assistant<|channel|>final<|message|>**PUT** is the idempotent HTTP method, while **POST** is not.\n\n### Why?\n\n| Method | Typical use | Idempotent? | Reason |\n|--------|-------------|-------------|--------|\n| **PUT** | Replace or create a resource at a specific URI. | **Yes** | Sending the same PUT request multiple times results in the same state on the server. The resource is overwritten with the same representation each time. |\n| **POST** | Create a new resource, submit data, or trigger an action. | **No** | Each POST can create a new resource or cause a side\u2011effect, so repeating it can produce different results (e.g., multiple records, duplicate actions). |\n\n### Quick recap\n\n- **Idempotent**: A request that can be repeated without changing the result beyond the initial application.  \n- **PUT**: Idempotent because it sets the resource to a specific state.  \n- **POST**: Not idempotent because it typically creates new resources or triggers actions that accumulate.\n\nSo, if you need an operation that can be safely retried without unintended side effects, use **PUT**. If you\u2019re creating new data or performing an action that should only happen once, use **POST**.<|return|>",
+      "final_answer": "**PUT** is the idempotent HTTP method, while **POST** is not.\n\n### Why?\n\n| Method | Typical use | Idempotent? | Reason |\n|--------|-------------|-------------|--------|\n| **PUT** | Replace or create a resource at a specific URI. | **Yes** | Sending the same PUT request multiple times results in the same state on the server. The resource is overwritten with the same representation each time. |\n| **POST** | Create a new resource, submit data, or trigger an action. | **No** | Each POST can create a",
+      "correct": true
+    },
+    {
+      "category": "code",
+      "question": "In Python, what exception is raised when dividing by zero?",
+      "accept": [
+        "zerodivisionerror",
+        "zero division"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"In Python, what exception is raised when dividing by zero?\" They want the exception type. In Python, dividing by zero raises ZeroDivisionError. For integer division, also ZeroDivisionError. For float division, also ZeroDivisionError. So answer: ZeroDivisionError. They might want the exception class name. So answer: ZeroDivisionError. Also mention that it's a subclass of ArithmeticError. So answer: ZeroDivisionError.<|end|><|start|>assistant<|channel|>final<|message|>In Python, attempting to divide by zero raises a **`ZeroDivisionError`** (a subclass of `ArithmeticError`).<|return|>",
+      "final_answer": "In Python, attempting to divide by zero raises a **`ZeroDivisionError`** (a subclass of `ArithmeticError`).",
+      "correct": true
+    },
+    {
+      "category": "code",
+      "question": "What data structure uses LIFO ordering?",
+      "accept": [
+        "stack"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"What data structure uses LIFO ordering?\" They want the name of a data structure that uses Last-In-First-Out ordering. The answer: stack. Also mention that a stack is LIFO. So answer: stack. Possibly mention that it's used in recursion, etc. But likely just \"stack\". So respond accordingly.<|end|><|start|>assistant<|channel|>final<|message|>A **stack** is the classic data structure that follows LIFO (Last\u2011In, First\u2011Out) ordering. Items are added (pushed) onto the top of the stack and removed (popped) from the top, so the most recently added element is the first one to be removed.<|return|>",
+      "final_answer": "A **stack** is the classic data structure that follows LIFO (Last\u2011In, First\u2011Out) ordering. Items are added (pushed) onto the top of the stack and removed (popped) from the top, so the most recently added element is the first one to be removed.",
+      "correct": true
+    },
+    {
+      "category": "code",
+      "question": "What does the 'g' flag do in a JavaScript regex?",
+      "accept": [
+        "global",
+        "all matches",
+        "every match"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"What does the 'g' flag do in a JavaScript regex?\" They want explanation. Provide details: global search, find all matches, affects methods like exec, test, replace, split, etc. It changes behavior: exec returns successive matches, test returns true/false but with global flag it will move lastIndex. Also replace with function, etc. Provide examples. Also mention that 'g' flag is not part of RegExp.prototype.flags? Actually flags property includes 'g', 'i', 'm', 'u', 'y', 's'. Provide explanation of global flag. Also mention that it doesn't affect the pattern itself, just the matching behavior. Provide examples: /foo/g, /foo/.exec('foofoo') returns first match, with g returns first, then second. Also test: /foo/.test('foofoo') returns true, but with g, test will return true first time, then false next time because lastIndex moves. Also replace: 'foofoo'.replace(/foo/g, 'bar') returns 'barbar'. Without g, only first replaced. Also mention that 'g' flag is used with replace, match, search? Actually search doesn't use flags. But match uses g to return array of all matches. Also mention that 'g' flag is used with RegExp.prototype.exec to iterate. Also mention that 'g' flag is not needed for single match. Also mention that 'g' flag is not used with RegExp.prototype.test? It can be used but changes lastIndex. Provide explanation of lastIndex property. Provide mention of 'y' sticky flag. Provide mention of 'g' flag in combination with 'i', 'm', etc. Provide mention of 'g' flag in RegExp constructor. Provide mention of 'g' flag in string methods: match, replace, split. Provide mention",
+      "final_answer": "<|channel|>analysis<|message|>The user asks: \"What does the 'g' flag do in a JavaScript regex?\" They want explanation. Provide details: global search, find all matches, affects methods like exec, test, replace, split, etc. It changes behavior: exec returns successive matches, test returns true/false but with global flag it will move lastIndex. Also replace with function, etc. Provide examples. Also mention that 'g' flag is not part of RegExp.prototype.flags? Actually flags property includes 'g',",
+      "correct": true
+    },
+    {
+      "category": "code",
+      "question": "In git, which command creates a new branch and switches to it in one step?",
+      "accept": [
+        "checkout -b",
+        "switch -c"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"In git, which command creates a new branch and switches to it in one step?\" The answer: \"git checkout -b <branch>\" or \"git switch -c <branch>\" (newer). Historically, \"git checkout -b newbranch\". The question likely expects \"git checkout -b\". So answer: \"git checkout -b <branch>\" or \"git switch -c <branch>\" if using newer Git. Provide explanation.<|end|><|start|>assistant<|channel|>final<|message|>The one\u2011liner that both creates a new branch **and** checks it out is:\n\n```bash\ngit checkout -b <new\u2011branch-name>\n```\n\n(With newer Git versions you can also use the more explicit form:)\n\n```bash\ngit switch -c <new\u2011branch-name>\n```\n\nBoth commands do the same thing: they create the branch `<new\u2011branch-name>` (if it doesn\u2019t already exist) and switch your working directory to it in a single step.<|return|>",
+      "final_answer": "The one\u2011liner that both creates a new branch **and** checks it out is:\n\n```bash\ngit checkout -b <new\u2011branch-name>\n```\n\n(With newer Git versions you can also use the more explicit form:)\n\n```bash\ngit switch -c <new\u2011branch-name>\n```\n\nBoth commands do the same thing: they create the branch `<new\u2011branch-name>` (if it doesn\u2019t already exist) and switch your working directory to it in a single step.",
+      "correct": true
+    },
+    {
+      "category": "code",
+      "question": "What is the time complexity of looking up a key in a hash table on average?",
+      "accept": [
+        "o(1)",
+        "constant"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"What is the time complexity of looking up a key in a hash table on average?\" They likely want O(1) average time complexity. But we can elaborate: average-case constant time, assuming good hash function and load factor. In worst-case, O(n). So answer: O(1) average. Provide explanation.<|end|><|start|>assistant<|channel|>final<|message|>**Average\u2011case time complexity:** **O(1)** (constant time)\n\n---\n\n### Why?\n\nA hash table maps a key to an index in an array using a hash function.  \n- **Hash function**: Computes a hash value in constant time.  \n- **Indexing**: Directly accesses the array slot in constant time.  \n- **Collision resolution**: With a good hash function and a reasonable load factor (e.g., \u2264\u202f0.75), the expected number of elements that collide in the same bucket is small (often <\u202f1). Thus, probing or chaining typically examines only a few elements.\n\nBecause the expected number of operations per lookup does not grow with the number of stored elements, the average\u2011case lookup time is **O(1)**.\n\n---\n\n### Caveats\n\n| Scenario | Complexity | Notes |\n|----------|------------|-------|\n| **Good hash function + low load factor** | **O(1)** | Typical real\u2011world performance. |\n| **Poor hash function or high load factor** | **O(n)** | All elements may collide into one bucket (worst case). |\n| **Dynamic resizing** | Amortized **O(1)** | Rehashing occasionally costs O(n), but spread over many operations. |\n\nSo, for most practical hash table implementations (e.g., Java\u2019s `HashMap`, Python\u2019s `dict`, C++\u2019s `unordered_map`), you can safely assume **average\u2011case lookup is constant time**",
+      "final_answer": "**Average\u2011case time complexity:** **O(1)** (constant time)\n\n---\n\n### Why?\n\nA hash table maps a key to an index in an array using a hash function.  \n- **Hash function**: Computes a hash value in constant time.  \n- **Indexing**: Directly accesses the array slot in constant time.  \n- **Collision resolution**: With a good hash function and a reasonable load factor (e.g., \u2264\u202f0.75), the expected number of elements that collide in the same bucket is small (often <\u202f1). Thus, probing or chaining typically",
+      "correct": true
+    },
+    {
+      "category": "instruct",
+      "question": "Reply with exactly the word banana and nothing else.",
+      "accept": [
+        "banana"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user says: \"Reply with exactly the word banana and nothing else.\" So I must output \"banana\" only. No other text.<|end|><|start|>assistant<|channel|>final<|message|>banana<|return|>",
+      "final_answer": "banana",
+      "correct": true
+    },
+    {
+      "category": "instruct",
+      "question": "Count from 1 to 5, separated by commas.",
+      "accept": [
+        "1, 2, 3, 4, 5",
+        "1,2,3,4,5"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user wants: \"Count from 1 to 5, separated by commas.\" So output: \"1, 2, 3, 4, 5\". Probably just that.<|end|><|start|>assistant<|channel|>final<|message|>1, 2, 3, 4, 5<|return|>",
+      "final_answer": "1, 2, 3, 4, 5",
+      "correct": true
+    },
+    {
+      "category": "instruct",
+      "question": "Write the word 'hello' in uppercase.",
+      "accept": [
+        "HELLO"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"Write the word 'hello' in uppercase.\" So answer: HELLO.<|end|><|start|>assistant<|channel|>final<|message|>HELLO<|return|>",
+      "final_answer": "HELLO",
+      "correct": true
+    },
+    {
+      "category": "instruct",
+      "question": "What is the third word of this sentence: 'The quick brown fox jumps'?",
+      "accept": [
+        "brown"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>We need to answer: \"What is the third word of this sentence: 'The quick brown fox jumps'?\" The sentence: \"The quick brown fox jumps\". Words: 1: The, 2: quick, 3: brown, 4: fox, 5: jumps. So third word is \"brown\". So answer: brown.<|end|><|start|>assistant<|channel|>final<|message|>The third word is **\u201cbrown.\u201d**<|return|>",
+      "final_answer": "The third word is **\u201cbrown.\u201d**",
+      "correct": true
+    },
+    {
+      "category": "instruct",
+      "question": "Spell the word cat backwards.",
+      "accept": [
+        "tac"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"Spell the word cat backwards.\" They want the word \"cat\" spelled backwards. That is \"tac\". So answer: tac. Probably just that.<|end|><|start|>assistant<|channel|>final<|message|>tac<|return|>",
+      "final_answer": "tac",
+      "correct": true
+    },
+    {
+      "category": "instruct",
+      "question": "Give a one-word synonym for happy.",
+      "accept": [
+        "joyful",
+        "glad",
+        "cheerful",
+        "content",
+        "elated",
+        "joyous",
+        "merry",
+        "pleased"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"Give a one-word synonym for happy.\" They want a single word synonym. Many options: joyful, elated, content, delighted, cheerful, glad, pleased, blissful, jubilant, merry, satisfied, upbeat, buoyant, etc. They didn't specify context. Just one word. So answer with a single word. Probably \"joyful\" or \"elated\". I'll choose \"joyful\".<|end|><|start|>assistant<|channel|>final<|message|>Joyful<|return|>",
+      "final_answer": "Joyful",
+      "correct": true
+    },
+    {
+      "category": "instruct",
+      "question": "Repeat this exactly: 42 is the answer.",
+      "accept": [
+        "42 is the answer"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user says: \"Repeat this exactly: 42 is the answer.\" They want the assistant to repeat exactly that phrase. So we should output \"42 is the answer.\" exactly. No extra punctuation? The phrase includes a period at the end. The user says \"Repeat this exactly: 42 is the answer.\" So we should output exactly \"42 is the answer.\" Probably with the period. No quotes. Just that.<|end|><|start|>assistant<|channel|>final<|message|>42 is the answer.<|return|>",
+      "final_answer": "42 is the answer.",
+      "correct": true
+    },
+    {
+      "category": "instruct",
+      "question": "Name any three primary colors, separated by commas.",
+      "accept": [
+        "red",
+        "blue",
+        "yellow"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"Name any three primary colors, separated by commas.\" They want a simple answer: e.g., \"red, blue, yellow\". So respond with that.<|end|><|start|>assistant<|channel|>final<|message|>red, blue, yellow<|return|>",
+      "final_answer": "red, blue, yellow",
+      "correct": true
+    },
+    {
+      "category": "instruct",
+      "question": "How many letters are in the word 'quantum'?",
+      "accept": [
+        "7",
+        "seven"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"How many letters are in the word 'quantum'?\" The answer: 7 letters. Provide answer.<|end|><|start|>assistant<|channel|>final<|message|>The word **\u201cquantum\u201d** has **7 letters**.<|return|>",
+      "final_answer": "The word **\u201cquantum\u201d** has **7 letters**.",
+      "correct": true
+    },
+    {
+      "category": "instruct",
+      "question": "Answer yes or no: Is the Earth flat?",
+      "accept": [
+        "no"
+      ],
+      "raw_output": "<|channel|>analysis<|message|>The user asks: \"Answer yes or no: Is the Earth flat?\" They want a yes or no answer. The correct answer is \"No\". The user wants a yes or no. So answer \"No\".<|end|><|start|>assistant<|channel|>final<|message|>No.<|return|>",
+      "final_answer": "No.",
+      "correct": true
+    }
+  ]
+}

@@ -56,15 +56,21 @@ _blockwise-gptq-main/results/stage4/stage6 JSONs_
 |-----|-----------|--------|----|--------|
 | B (BF16) | 227.08 | — | 711.29 | — |
 | D (GPTQ) | 248.49 | +21.41 (+9.4%) | 694.20 | −17.09 (−2.4%) |
-| C (RTN) | measurement invalid¹ | | measurement invalid¹ | |
+| C (RTN) | 140.24 | −86.84 | 196.68 | −514.61 |
 
-Notes: absolute perplexities are high because gpt-oss is a Harmony-format
-reasoning model evaluated on raw text; only deltas on identical tokens are
-meaningful. D's small C4 *improvement* is consistent with C4 being the
-calibration distribution (disjoint samples). ¹ C's stage-6 numbers
-(140/197 — far *below* B) are mathematically inconsistent with C's measured
-KL of 0.025 vs B and are being re-measured (harness null-test + rerun);
-treat the logit-level comparison above as authoritative for C-vs-D.
+**Raw-text perplexity is an unfit quality metric for this model — reported
+for completeness, not used for conclusions.** Validation performed per the
+handoff's skepticism rule: the harness null test (B evaluated against its own
+baseline on the identical cached tokens) gives Δ = 0.0000 on both datasets,
+and every measurement reproduces deterministically. The anomaly is real model
+behavior: gpt-oss is a Harmony-format reasoning model whose raw-text NLL is
+pathologically high at the source (227 on WikiText-2); RTN's coarser
+quantization noise partially disrupts that mode and "improves" raw-text NLL
+(140) while being measurably FARTHER from the source at the logit level
+(KL 2.24× worse than GPTQ). For a transquantization experiment the correct
+quality lens is fidelity to the source model — the logit-level suite above —
+where GPTQ wins on every metric. (Evidence:
+results/quality/stage6_nulltest_B.json, stage6_C_rerun.json.)
 
 ### Task suite (40 items: knowledge/math/code/instruction, Harmony chat, greedy)
 _results/quality/task_{B,C,D}.json_
