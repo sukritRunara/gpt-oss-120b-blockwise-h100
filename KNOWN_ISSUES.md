@@ -24,33 +24,6 @@ Hard-coded model paths in `test_vLLM_deploy_quantized_model.py:2,35`.
 Note stage7's `_CODE_ROOT` points at the repo root (not `opteam-blockwise-gptq/`) —
 the two path constants are inconsistent with each other as well.
 
-### 🟠 P0.2 — Expert-routing patch is Transformers-version-dependent
-**Evidence:** [gpt_oss_expert_gptq.py:176-220](blockwise-gptq-main/opteam-blockwise-gptq/gpt_oss_expert_gptq.py#L176-L220)
-derives `num_exp = routing_weights.shape[1]` and indexes `routing_weights[token_idx, e]`
-by **expert ID**.
-**Analysis:** This is correct **iff** the installed Transformers passes a *dense*
-`routing_weights` `[tokens, num_experts]` (scatter of top-k softmax). For the variant
-that passes top-k-only weights `[tokens, top_k]`, `num_exp` becomes `top_k` (=4) and
-`F.one_hot(router_indices, num_classes=5)` **crashes** for any expert ID ≥ 5 — or worse,
-silently mis-weights. Also the patch always runs the "training-path" explicit loop;
-numerical equivalence with the pinned version's eval path is unverified.
-**Fix:** Pin transformers in `.venv-quant`, read its `GptOssExperts.forward`, match
-semantics exactly, add the §12 routing test battery (32 experts / top-4, expert IDs > k,
-repeated experts, multi-expert tokens, patched-vs-reference forward equivalence).
-
-### 🔴 P0.3 — `_GptqH` accumulation is mathematically wrong (≠ `GPTQ.add_batch`)
-**Evidence:** [expert_dispatch.py:63-77](blockwise-gptq-main/opteam-blockwise-gptq/expert_dispatch.py#L63-L77)
-vs [gptq.py:38-55](blockwise-gptq-main/opteam-blockwise-gptq/gptq.py#L38-L55).
-**Analysis (verified by hand):** `GPTQ.add_batch` maintains the invariant
-`H = (2/N) Σ xxᵀ` — every row weighted equally. `_GptqH.add_batch` adds each batch with
-weight `n/N²` (it divides by `√N` *and* multiplies by `n/N`): two batches n₁, n₂ yield
-`H = X₁ᵀX₁/N + (n₂/N²)X₂ᵀX₂` — batch-2 rows carry `n₂/N` the weight of batch-1 rows.
-Since expert token counts vary per calibration sample, later samples are systematically
-underweighted. The docstring's claim that the formula "is identical to GPTQ.add_batch"
-is false. All GPT-OSS parallel-mode expert Hessians are affected.
-**Fix:** One canonical accumulator used by both paths + chunked==one-shot equivalence
-tests with unequal chunk sizes (handoff §12).
-
 ### 🔴 P0.4 — Parallel-mode expert Hessians OOM the H100
 **Evidence:** [apply.py:494-531](blockwise-gptq-main/opteam-blockwise-gptq/apply.py#L494-L531)
 allocates accumulators for **all** layers before one full-model pass; `_GptqH` lazily
@@ -126,4 +99,40 @@ no server, no concurrency, no async, no percentiles, no per-request records.
 
 ## Resolved
 
-_(none yet)_
+### 🟢 P0.1 — Hard-coded DGX paths (resolved 2026-07-16)
+Was: `_CODE_ROOT = Path("/home/runara_dgx_spark_1/...")` + RuntimeError guard in 10
+files; nothing under `tests/` imported on this pod.
+**Fix:** repo-relative `Path(__file__).resolve().parents[N] / "opteam-blockwise-gptq"`;
+`test_vLLM_deploy_quantized_model.py` takes a required `--model` arg.
+**Proof:** stage1 5/5, stage2 7/7, stage3 6/6 run in `.venv-quant` from a cwd *outside*
+the repo root (`logs/tests/stage{1,2,3}_*.log`); `grep 'runara_dgx|/home/'` clean.
+Commit `c801d6a`.
+
+### 🟢 P0.2 — GPT-OSS expert-routing bug (resolved 2026-07-16)
+Was: patch derived `num_experts` from `routing_weights.shape[1]` and indexed weights by
+expert ID. Against the **pinned transformers 5.14.0** (verified in
+`.venv-quant/.../models/gpt_oss/modeling_gpt_oss.py`): the router returns top-k-only
+`router_scores [tokens, top_k]`, experts index `routing_weights[token_idx, top_k_pos]`,
+one_hot uses `num_classes=num_experts`, and experts receive already-flat input. The old
+patch therefore **crashed at one_hot** (`num_classes=top_k+1=5`) for any expert ID ≥ 5.
+**Fix:** `patch_expert_forward` reimplements the pinned forward exactly (positional
+weight lookup, `num_classes=num_experts`, flat-shape preservation), auto-detects the
+dense-vs-top-k contract by shape and hard-errors on unknown contracts, and exposes a
+`call_counter` so callers can fail loudly if a fused kernel forward
+(`@use_kernel_forward_from_hub("MegaBlocksMoeMLP")`) bypasses the patch.
+**Proof:** new `tests/internalTests/test_gpt_oss_routing.py` — 9/9 pass incl.
+patched-vs-reference numerical equivalence against the real transformers class,
+expert IDs ≥ top_k, positional-weight isolation, exact add_batch token subsets
+(`logs/tests/gpt_oss_routing_20260716.log`).
+
+### 🟢 P0.3 — `_GptqH` accumulation mathematically wrong (resolved 2026-07-16)
+Was: `_GptqH.add_batch` weighted each chunk `n/N²` instead of the uniform per-row
+`2/N` — with two batches n₁,n₂: `H = X₁ᵀX₁/N + (n₂/N²)X₂ᵀX₂`, so later expert batches
+were systematically underweighted (expert token counts always vary per sample).
+**Fix:** single canonical `gptq.accumulate_hessian()` maintaining `H = (2/N)·Σ xxᵀ`
+over flattened rows; both `GPTQ.add_batch` and `_GptqH.add_batch` delegate to it. The
+row-count convention is documented in its docstring.
+**Proof:** new `tests/internalTests/test_hessian_canonical.py` — 9/9 pass incl.
+unequal-chunk == one-shot, `_GptqH ≡ GPTQ` on the same stream, direct-formula check,
+transplant-into-GPTQ quantization identity, save/load round trip
+(`logs/tests/hessian_canonical_20260716.log`). Existing property2 suite still passes.

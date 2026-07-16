@@ -5,6 +5,51 @@ without pointing to the test, log, or artifact that proves it.
 
 ---
 
+## 2026-07-16 07:35 UTC — P0.2 (expert routing) and P0.3 (Hessian accumulation) fixed
+
+**Status:** complete
+
+**Goal:** Fix the two highest-risk correctness bugs with proof against the pinned
+environment.
+
+**P0.2 — expert routing.** Read the installed transformers 5.14.0
+`modeling_gpt_oss.py`: router emits top-k-only `router_scores [tokens, top_k]`;
+`GptOssExperts.forward` indexes `routing_weights[token_idx, top_k_pos]` (by
+POSITION); `one_hot(num_classes=num_experts)`; experts get flat input. The old patch
+crashed at one_hot for expert IDs ≥ 5 on this contract. Rewrote
+`patch_expert_forward` to match the pinned semantics exactly, with shape-based
+dense/top-k contract detection, hard error on unknown contracts, and a
+`call_counter` to detect kernel-fusion bypass (GptOssMLP carries
+`@use_kernel_forward_from_hub("MegaBlocksMoeMLP")`).
+
+**P0.3 — Hessian accumulation.** Introduced canonical `gptq.accumulate_hessian()`
+(invariant `H = (2/N)·Σ xxᵀ` over flattened rows); `GPTQ.add_batch` and
+`_GptqH.add_batch` now both delegate to it. Old `_GptqH` weighted chunks `n/N²`.
+
+**Commands / evidence:**
+- `pytest tests/internalTests/test_gpt_oss_routing.py` → **9/9**
+  (`logs/tests/gpt_oss_routing_20260716.log`) — incl. patched≡reference equivalence
+  against the real transformers class
+- `pytest tests/internalTests/test_hessian_canonical.py` → **9/9**
+  (`logs/tests/hessian_canonical_20260716.log`) — incl. unequal-chunk equivalence,
+  `_GptqH ≡ GPTQ`, transplant quantization identity
+- Regression: stage1 5/5, stage2 7/7, stage3 6/6, property1/2/4 all pass
+
+**Files changed:**
+- `opteam-blockwise-gptq/gpt_oss_expert_gptq.py` — patch rewritten (P0.2)
+- `opteam-blockwise-gptq/gptq.py` — `accumulate_hessian()` added; `add_batch` delegates
+- `opteam-blockwise-gptq/expert_dispatch.py` — `_GptqH.add_batch` delegates
+- `tests/internalTests/test_gpt_oss_routing.py` — new (9 tests)
+- `tests/internalTests/test_hessian_canonical.py` — new (9 tests)
+- `DECISIONS.md` — D-005 (routing contract), D-006 (Hessian convention)
+
+**Next:** P0.4 — memory-bounded, resumable layer-group Hessian collection
+(`--hessian_layer_group_size`), plus fail-loud calibration coverage checks.
+
+**Blockers:** none.
+
+---
+
 ## 2026-07-16 07:12 UTC — Environments frozen; P0.1 path fix landed and verified
 
 **Status:** complete

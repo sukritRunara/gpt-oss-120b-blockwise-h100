@@ -53,6 +53,40 @@ Kept out of the shared repo because it is a personal convenience, not a team pol
 
 ---
 
+## D-005 — Routing contract pinned to transformers 5.14.0 top-k semantics
+
+**Decision:** `patch_expert_forward` targets the transformers 5.14.0
+`GptOssExperts.forward` contract — top-k-only `routing_weights [tokens, top_k]`
+indexed by **top-k position**, `one_hot(num_classes=num_experts)`, flat input —
+verified by reading the installed source. A shape-based branch also supports the
+older dense `[tokens, num_experts]` contract; anything else hard-errors.
+
+**Why:** The two historical Transformers variants are shape-distinguishable at call
+time; supporting both with an explicit hard error for unknown contracts is safer than
+silently assuming one. A source-introspection test
+(`test_reference_contract_is_topk`) trips if a future transformers upgrade changes
+the contract.
+
+**Alternatives:** Hooking instead of reimplementation is impossible — GPT-OSS experts
+are batched `nn.Parameter`s with no per-expert submodules to hook; the down-projection
+input is only observable by recomputing the gate.
+
+---
+
+## D-006 — One canonical Hessian convention: H = (2/N)·Σ xxᵀ over flattened rows
+
+**Decision:** "Sample count" means flattened activation rows everywhere (batch×seq
+for 3D). Implemented once in `gptq.accumulate_hessian()`; `GPTQ.add_batch` and
+`_GptqH.add_batch` both delegate to it.
+
+**Why:** The prior `_GptqH` inline formula weighted chunks `n/N²`, underweighting
+later batches whenever chunk sizes varied (always true for expert routing). The `2/N`
+constant matches upstream ist-daslab GPTQ so cached Hessians stay bit-compatible;
+uniform H scaling is mathematically irrelevant to fasterquant (error compensation and
+percdamp are scale-invariant), so the choice is convention, not correctness.
+
+---
+
 <!-- Pending decisions to record as work proceeds (handoff §9):
   - Which Hessian-collection strategy was chosen (memory-bounded layer groups).
   - Which vLLM version and NVFP4 contract were pinned.
