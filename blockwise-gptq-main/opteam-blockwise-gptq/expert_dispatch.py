@@ -46,13 +46,17 @@ from gptq import GPTQ
 class _GptqH:
     """Hessian-only accumulator for the parallel collection phase.
 
-    Holds only H = running X.T @ X average and an nsamples counter.
-    No weight matrix is stored — expert shims are created lazily one at a time
-    during the quantization phase to avoid ~76 GB of simultaneous weight copies.
+    Holds only the running Hessian and an nsamples counter. No weight matrix
+    is stored — expert shims are created lazily one at a time during the
+    quantization phase to avoid ~76 GB of simultaneous weight copies.
 
-    The add_batch accumulation formula is identical to GPTQ.add_batch so that
+    P0.3 fix: accumulation delegates to gptq.accumulate_hessian(), the single
+    canonical convention (H = (2/N)·Σ x xᵀ over flattened rows), so
     transferring (H, nsamples) into a real GPTQ instance before fasterquant
-    yields numerically correct results.
+    is numerically identical to having called GPTQ.add_batch directly.
+    The previous inline formula weighted each chunk by n/N² instead of the
+    uniform per-row weight, systematically underweighting later calibration
+    batches whenever expert token counts varied between forward passes.
     """
 
     def __init__(self, in_features: int):
@@ -61,20 +65,14 @@ class _GptqH:
         self.nsamples = 0
 
     def add_batch(self, inp: torch.Tensor, out=None):
-        if inp.dim() == 3:
-            inp = inp.reshape(-1, inp.shape[-1])
-        inp = inp.float()
-        n   = inp.shape[0]
+        from gptq import accumulate_hessian
         if self.H is None:
             self.H = torch.zeros(
                 (self.columns, self.columns),
                 device=inp.device,
                 dtype=torch.float32,
             )
-        self.nsamples += n
-        self.H        *= (self.nsamples - n) / self.nsamples
-        inp            = inp / math.sqrt(self.nsamples)
-        self.H        += inp.T @ inp * (n / self.nsamples)
+        self.H, self.nsamples = accumulate_hessian(self.H, self.nsamples, inp)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
