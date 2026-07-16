@@ -1,0 +1,40 @@
+# Python virtual environments
+.venv/
+.venv-quant/
+.venv-serve/
+env/
+venv/
+ENV/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Model files / checkpoints / weights
+models/
+checkpoints/
+weights/
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.ckpt
+*.onnx
+
+# Caches (HF, datasets, calibration, hessians)
+cache/
+**/hessian_cache/
+
+# Logs / outputs
+logs/
+outputs/
+*.log
+
+# Secrets / local env
+env.sh
+*.env
+.env
+
+# OS junk
+.DS_Store

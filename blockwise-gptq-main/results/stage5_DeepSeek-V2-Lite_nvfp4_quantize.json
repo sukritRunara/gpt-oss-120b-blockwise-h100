@@ -1,0 +1,18 @@
+{
+  "stage": "5_quantize",
+  "model": "DeepSeek-V2-Lite",
+  "model_path": "/home/runara_dgx_spark_1/Itamar/projects/kv-cache-reduction/models/DeepSeek-V2-Lite",
+  "output_dir": "/home/runara_dgx_spark_1/Itamar/projects/Block-wise-GPTQ-GPT-OSS-20B-NVFP4/blockwise-gptq-blackwell-GPT-OSS-20B/models/DeepSeek-V2-Lite-NVFP4",
+  "quant_format": "nvfp4",
+  "dataset": "c4",
+  "n_calib": 512,
+  "seq_len": 4096,
+  "blocksize": 32,
+  "percdamp": 0.01,
+  "parallel_hessian": true,
+  "mixed_precision_threshold": 100.0,
+  "total_gptq_loss": 2080.996729,
+  "quant_time_s": 390.72,
+  "blocksize_sweep": null,
+  "timestamp": "2026-06-19T06:50:44.548437+00:00"
+}

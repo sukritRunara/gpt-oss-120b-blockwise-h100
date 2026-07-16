@@ -1,0 +1,22 @@
+{
+  "stage": "4_baseline",
+  "model": "DeepSeek-V2-Lite",
+  "model_path": "/home/runara_dgx_spark_1/Itamar/projects/kv-cache-reduction/models/DeepSeek-V2-Lite",
+  "dtype": "bfloat16",
+  "seq_len": 4096,
+  "timestamp": "2026-06-18T20:44:20.126034+00:00",
+  "wikitext2": {
+    "ppl": 7.224001,
+    "avg_nll": 1.977409,
+    "n_tokens": 307200,
+    "n_windows": 75,
+    "elapsed_s": 417.48
+  },
+  "c4": {
+    "ppl": 11.409393,
+    "avg_nll": 2.434437,
+    "n_tokens": 131072,
+    "n_windows": 32,
+    "elapsed_s": 177.13
+  }
+}

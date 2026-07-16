@@ -1,0 +1,52 @@
+# requirements.txt — Block-wise GPTQ · GPT-OSS 20B · NVFP4
+#
+# DO NOT add torch here.
+# It is installed separately by scripts/setup_runtime.sh because it requires
+# a specific --index-url that pip -r cannot pass:
+#   torch → https://download.pytorch.org/whl/cu128  (CUDA-version specific)
+#
+# float8_e4m3fn (used by NVFP4Quantizer) requires torch >= 2.1.0 and CUDA >= 12.0.
+# setup_runtime.sh installs torch 2.7.0 by default, which satisfies this.
+
+# ── Model loading ─────────────────────────────────────────────────────────────
+# transformers: required for AutoModelForCausalLM / AutoTokenizer in Stages 4–6.
+# Upper bound avoids 5.x breaking any custom modeling code.
+transformers>=4.57.1,<5.0.0
+
+# accelerate: required for device_map="auto" when loading GPT-OSS 20B in Stages 5–6.
+# Also used by transformers for multi-device inference on DGX Spark unified memory.
+accelerate>=0.33.0
+
+# safetensors: GPT-OSS 20B weights are stored in safetensors format.
+safetensors>=0.4.0
+
+# huggingface_hub: model download, cache management, and auth (hf_hub_download).
+huggingface_hub>=0.24.0
+
+# hf_transfer: C-based download accelerator; needed for
+# HF_HUB_ENABLE_HF_TRANSFER=1 (set in the venv activate by setup_runtime.sh)
+# to have any effect. Without this package the env var is silently ignored.
+hf_transfer>=0.1.4
+
+# ── Calibration and evaluation data (Stages 4–6) ─────────────────────────────
+# datasets: loads WikiText-2 and C4 for both GPTQ calibration (Stage 5)
+# and perplexity evaluation (Stages 4 and 6). Both datasets are streamed
+# from HuggingFace Hub; internet access is required on first run.
+datasets>=2.20.0
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+# pytest: test runner for all stage scripts. Stage scripts can be run directly
+# (python stage1_nvfp4_unit_tests.py) or collected by pytest for CI.
+pytest>=8.0.0
+
+# numpy: used in loss aggregation, MSE calculations, and condition number
+# analysis across Stages 1–6.
+numpy>=1.26.0
+
+# tqdm: progress bars during calibration forward passes and perplexity eval.
+tqdm>=4.66.0
+
+# ── GPU monitoring ────────────────────────────────────────────────────────────
+# nvidia-ml-py: Python bindings for NVML; reads live GPU memory and utilisation
+# during quantization (Stage 5) to track peak memory usage on DGX Spark.
+nvidia-ml-py>=12.0.0

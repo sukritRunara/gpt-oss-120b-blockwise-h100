@@ -1,0 +1,52 @@
+
+
+════════════════════════════════════════════════════════════════════
+BENCHMARK RESULTS
+════════════════════════════════════════════════════════════════════
+
+PEAK GPU MEMORY
+  BF16  : 0.00 GiB
+  NVFP4 : 0.00 GiB
+  Saved : n/a  (nvidia-smi unavailable or returned 0)
+
+TIME-TO-FIRST-TOKEN  (ms, single request)
+  BF16  : 106.2 ms
+  NVFP4 : 36.3 ms
+  Delta : +69.8 ms  (2.92x faster)
+
+THROUGHPUT  (output tokens/s)
+   Batch        BF16       NVFP4   Speedup
+  ──────────────────────────────────────────────────
+       1        38.1        94.1     2.47x
+       4        76.0       217.1     2.86x
+       8       104.2       316.9     3.04x
+
+QUALITY  (greedy, temperature=0)
+────────────────────────────────────────────────────────────────────
+
+  [✗] Prompt: 'The capital of France is'
+      BF16  : 'Paris.\nThe currency of France is the Euro.\nThe languages spoken in France are French and French patois.\nThe population of France is 65,273,511 (July 2012 est.).\nThe religions in France are Roman Catholic 83-88%, Protestant 2%, Jewish 1%, Muslim 5-10%,'
+      NVFP4 : 'Paris.\nThe official language of France is French.\nThe currency of France is the Euro.\nThe population of France is 100 million.\nThe area of France is 551,695 km2.\nThe national anthem of France is La Marseillaise.\nThe national sport of France is football.\nThe national animal of France is the French Bulld'
+
+  [✗] Prompt: '2 + 2 ='
+      BF16  : '0\n\nx2 + 2x + 1 = 0\n\n(x + 1)2 = 0\n\nx + 1 = 0\n\nx = -1\n\nx = -1\n\nx = -1\n\nx = -1\n\nx = -1\n\nx = -1\n\nx = -1'
+      NVFP4 : '4\n\n## 2 + 2 = 4\n2 + 2 = 4\n2 + 2 = 4\n2 + 2 = 4\n2 + 2 = 4\n2 + 2 = 4\n2 + 2 = 4\n2 + 2 = 4\n2 + 2 = 4\n2 +'
+
+  [✗] Prompt: 'def fibonacci(n):\n    '
+      BF16  : 'if n == 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        return fibonacci(n-1) + fibonacci(n-2)'
+      NVFP4 : 'if n == 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        return fibonacci(n-1) + fibonacci(n-2)\n\n\ndef fibonacci_iterative(n):\n    if n == 0:\n        return 0\n    elif n == 1'
+
+  [✗] Prompt: 'The largest planet in the solar system is'
+      BF16  : 'Jupiter. It is a gas giant, which means that it is made up of gas and does not have a solid surface. Jupiter is the fifth planet from the sun and is about 11 times the size of Earth. It is also the most massive planet in the solar system, with a mass that is 2.5 times that of all the other planets combined.\nJupiter is known'
+      NVFP4 : 'Jupiter. It is the fifth planet from the Sun and is named after the Roman god Jupiter. Jupiter is a gas giant with a mass one-thousandth that of the Sun, but two and a half times that of all the other planets in the Solar System combined. It is by far the largest planet in the Solar System.\nJupiter is the third brightest object in the sky after the Sun'
+
+  [✗] Prompt: 'The speed of light in a vacuum is approximately'
+      BF16  : '300,000,000 meters per second.\n\n## How many meters are in a light year?\nA light year is the distance that light travels in one year. The speed of light is 186,000 miles per second (299,792 kilometers per second), and there are 60 seconds in a minute'
+      NVFP4 : '186,282 miles per second (299,792 kilometers per second), and in theory nothing can travel faster than light.\nThe speed of light is the speed at which light waves propagate through different mediums. The speed of light in a vacuum is 299,792,458 meters per second (983,57'
+
+  [✗] Prompt: 'In Python, a list comprehension that squares numbers 1-10 is:'
+      BF16  : '[x**2 for x in range(1,11)]\n\nThe above list comprehension is equivalent to:\n\nsquares = []\nfor x in range(1,11):\n    squares.append(x**2)\n\nThe list comprehension is more concise and easier to read.\n\n## 10. What is the difference between a list and'
+      NVFP4 : "[x**2 for x in range(1,11)]\n\nI'm trying to do the same thing in R, but I'm not sure how to do it.\n\nA list comprehension is a way to create a list in one line of code. It is a way to create a list from another list.\n\n## List Comprehension in R"
+
+════════════════════════════════════════════════════════════════════
+

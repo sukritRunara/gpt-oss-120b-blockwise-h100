@@ -1,0 +1,32 @@
+{
+  "stage": "6_nvfp4_eval",
+  "model": "DeepSeek-V2-Lite-NVFP4",
+  "model_path": "models/DeepSeek-V2-Lite-NVFP4",
+  "bf16_stem": "DeepSeek-V2-Lite",
+  "quant_format": "nvfp4",
+  "seq_len": 4096,
+  "timestamp": "2026-06-21T07:48:38.703803+00:00",
+  "baseline_path": "/home/runara_dgx_spark_1/Itamar/projects/Block-wise-GPTQ-GPT-OSS-20B-NVFP4/blockwise-gptq/results/stage4_DeepSeek-V2-Lite_baseline.json",
+  "wikitext2": {
+    "ppl_nvfp4": 7.586309,
+    "ppl_bf16": 7.224001,
+    "delta_ppl": 0.362308,
+    "avg_nll": 2.026345,
+    "n_tokens": 307200,
+    "n_windows": 75,
+    "elapsed_s": 482.18
+  },
+  "c4": {
+    "ppl_nvfp4": 11.894197,
+    "ppl_bf16": 11.409393,
+    "delta_ppl": 0.484804,
+    "avg_nll": 2.476051,
+    "n_tokens": 131072,
+    "n_windows": 32,
+    "elapsed_s": 206.48
+  },
+  "thresholds": {
+    "warn_delta_wt2": 1.5,
+    "warn_delta_c4": 2.0
+  }
+}
