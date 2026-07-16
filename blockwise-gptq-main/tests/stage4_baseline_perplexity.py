@@ -141,7 +141,7 @@ def load_wikitext2_test():
     """Return list of strings from WikiText-2 test split."""
     from datasets import load_dataset
     print("  Loading WikiText-2 test split...", flush=True)
-    ds = load_dataset("wikitext", "wikitext-2-raw-v1",
+    ds = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1",
                       split="test", trust_remote_code=False)
     return ds["text"]
 

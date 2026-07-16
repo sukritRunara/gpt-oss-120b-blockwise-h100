@@ -85,6 +85,8 @@ def _rtn_quantize(linear, quant_format, device, group_size=128,
     quantizer = _make_quantizer(quant_format, device, group_size=group_size,
                                 nvfp4_block_size=nvfp4_block_size)
     W = linear.weight.data.float()
+    if hasattr(quantizer, "set_global_scale_from"):        # D-010, nvfp4
+        quantizer.set_global_scale_from(W)
     quantizer.find_params(W)
     linear.weight.data = quantizer.quantize_dequantize(W).to(linear.weight.dtype)
     return quantizer
@@ -98,110 +100,19 @@ def _is_valid_loss(v):
 # ── Hessian cache helpers ─────────────────────────────────────────────────────
 
 def _hessian_cache_dir(cache_root, model_name, dataset, nsamples, seqlen, seed):
-    """Return the Path for this specific Hessian cache."""
+    """Return the Path for this specific Hessian cache.
+
+    Relative cache roots are resolved against the repository root (parent of
+    opteam-blockwise-gptq/), never the process CWD (P0.1 portability rule).
+    """
     from pathlib import Path
+    cache_root = Path(cache_root)
+    if not cache_root.is_absolute():
+        cache_root = Path(__file__).resolve().parents[1] / cache_root
     model_stem = Path(model_name).name or "model"
     model_stem = model_stem.replace("/", "_").replace("\\", "_")
     key = f"{model_stem}_{dataset}_n{nsamples}_s{seqlen}_seed{seed}"
-    return Path(cache_root) / key
-
-
-def _hessian_cache_complete(cache_dir, n_layers):
-    """Return True only if every per-layer file and the metadata file exist."""
-    import json
-    from pathlib import Path
-    cache_dir = Path(cache_dir)
-    if not (cache_dir / "meta.json").exists():
-        return False
-    try:
-        meta = json.loads((cache_dir / "meta.json").read_text())
-        if meta.get("n_layers") != n_layers:
-            return False
-    except Exception:
-        return False
-    return all((cache_dir / f"layer_{i:02d}.pt").exists() for i in range(n_layers))
-
-
-def _save_hessians(cache_dir, layer_data, handler=None, free_after_save=False):
-    """Save per-layer Hessians to disk.
-
-    Layout:
-        cache_dir/
-            meta.json
-            layer_00.pt   {"attn": {name: {H, nsamples}},
-                           "experts": <handler-specific payload or None>}
-            layer_01.pt
-            ...
-
-    Args:
-        free_after_save: If True, free each layer's Hessian tensors from RAM
-            immediately after writing its .pt file. This caps peak RAM at
-            ~(single layer size) regardless of total cache size — critical for
-            large MoE models where all-layer Hessians can exceed 50+ GB.
-            Phase 2 in _run_parallel will reload each layer on demand.
-    """
-    import json
-    from pathlib import Path
-    cache_dir = Path(cache_dir)
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    total_bytes = 0
-    for layer_idx, ld in layer_data.items():
-        payload = {"attn": {}, "experts": None}
-
-        for name, g in ld["gptq_map"].items():
-            if g.H is not None:
-                payload["attn"][name] = {"H": g.H.cpu(), "nsamples": g.nsamples}
-                total_bytes += g.H.numel() * 4
-
-        if handler is not None and ld["has_experts"] and ld["acc_state"] is not None:
-            payload["experts"] = handler.hessian_state_to_save(ld["acc_state"])
-
-        torch.save(payload, cache_dir / f"layer_{layer_idx:02d}.pt")
-
-        if free_after_save:
-            # Release this layer's Hessians immediately — Phase 2 will reload
-            # from the file we just wrote, so nothing is lost.
-            for g in ld["gptq_map"].values():
-                g.H = None
-            if handler is not None and ld["has_experts"] \
-                    and ld["acc_state"] is not None:
-                handler.free_hessians(ld["acc_state"])
-            torch.cuda.empty_cache()
-
-    (cache_dir / "meta.json").write_text(
-        json.dumps({"n_layers": len(layer_data)}, indent=2)
-    )
-    print(f"[GPTQ] Hessians saved to {cache_dir}  "
-          f"({total_bytes / 1024**3:.1f} GB total, "
-          f"{'streamed per-layer' if free_after_save else 'all in RAM'})")
-
-
-def _load_hessians(cache_dir, layer_data, handler=None):
-    """Load per-layer Hessians from disk into layer_data structures.
-
-    Tensors are loaded on CPU; _run_parallel moves them to device as needed.
-    """
-    from pathlib import Path
-    cache_dir = Path(cache_dir)
-
-    for layer_idx, ld in layer_data.items():
-        payload = torch.load(
-            cache_dir / f"layer_{layer_idx:02d}.pt",
-            map_location="cpu",
-            weights_only=False,
-        )
-        for name, g in ld["gptq_map"].items():
-            if name in payload["attn"]:
-                g.H        = payload["attn"][name]["H"]
-                g.nsamples = payload["attn"][name]["nsamples"]
-
-        if (handler is not None
-                and ld["has_experts"]
-                and payload.get("experts") is not None):
-            handler.load_hessian_state(ld["acc_state"], payload["experts"])
-
-    print(f"[GPTQ] Hessians loaded from {cache_dir}")
+    return cache_root / key
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
@@ -224,6 +135,8 @@ def gptq_quantize_model(
     parallel_hessian=True,
     mixed_precision_threshold=100.0,
     hessian_cache_dir="hessian_cache",
+    hessian_layer_group_size=1,
+    artifact_dir=None,
 ):
     """Quantize all linear layers in a model using GPTQ.
 
@@ -242,14 +155,28 @@ def gptq_quantize_model(
         nvfp4_block_size: Microscaling block size for "nvfp4" (hardware-fixed at 16).
         mode: "standard" or "blockwise" (nvfp4 requires "blockwise").
         log_condition: Log per-block condition numbers (blockwise mode only).
-        parallel_hessian: If True (recommended), collect ALL layer Hessians from
-            the original unquantized model in one forward pass before quantizing.
+        parallel_hessian: If True (recommended), collect Hessians from the
+            original unquantized model (no quantization cascade) in
+            memory-bounded layer groups before quantizing anything.
         mixed_precision_threshold: Sublayers whose GPTQ loss exceeds this value
             are kept in BF16. Set to None to quantize everything.
-        hessian_cache_dir: Root directory for Hessian cache. Set to None to disable.
+        hessian_cache_dir: Root directory for the Hessian cache. Required in
+            parallel mode (the grouped design streams each group to disk to
+            bound memory — see P0.4). Relative paths resolve against the repo
+            root, not the CWD.
+        hessian_layer_group_size: Number of layers whose Hessians are collected
+            per full-model calibration pass. Peak accumulator memory scales
+            linearly with this; total collection time scales inversely. Start
+            at 1 for large MoE models and raise only after measuring headroom.
+        artifact_dir: If set (nvfp4 + parallel mode only), exact quantization
+            artifacts (E2M1 codes + FP8 scales, P0.6) are streamed per layer
+            into this directory as safetensors shards, each tensor verified
+            bit-exact against its QDQ weight before the run continues.
 
     Returns:
-        (all_quantizers, all_layer_losses, all_condition_numbers)
+        (all_quantizers, all_layer_losses, all_condition_numbers, quant_records)
+        quant_records is a list of per-tensor disposition records (P0.5) ready
+        for the Stage 5 manifest; empty when artifact_dir is None.
         Model weights are updated in-place.
     """
     if quant_format not in QUANTIZER_REGISTRY:
@@ -287,9 +214,28 @@ def gptq_quantize_model(
     is_moe           = arch_type in ("qwen3_moe", "gpt_oss", "deepseek_v2")
     embedding_modules = get_embedding_layers(model, arch_type)
 
+    if artifact_dir is not None:
+        if quant_format != "nvfp4":
+            raise ValueError(
+                "artifact_dir (exact code/scale capture, P0.6) is only "
+                f"supported for quant_format='nvfp4', got {quant_format!r}."
+            )
+        if not parallel_hessian:
+            raise ValueError(
+                "artifact_dir requires parallel_hessian=True — the sequential "
+                "debug path does not emit a tensor manifest."
+            )
+
+    # Full module paths for manifest records (e.g. "model.layers.7"), never
+    # positional guesses — resolved by module identity.
+    id_to_name    = {id(m): n for n, m in model.named_modules()}
+    layer_prefixes = {i: id_to_name.get(id(l), f"layers.{i}")
+                      for i, l in enumerate(layers)}
+
     all_quantizers        = {}
     all_layer_losses      = {}
     all_condition_numbers = {}
+    quant_records         = []
 
     if parallel_hessian:
         _run_parallel(
@@ -300,6 +246,8 @@ def gptq_quantize_model(
             mixed_precision_threshold,
             hessian_cache_dir, model_name, dataset, nsamples, seqlen, seed,
             all_quantizers, all_layer_losses, all_condition_numbers,
+            hessian_layer_group_size,
+            artifact_dir, layer_prefixes, quant_records,
         )
     else:
         _run_sequential(
@@ -393,7 +341,7 @@ def gptq_quantize_model(
               f"(loss > {mixed_precision_threshold}).")
     print()
 
-    return all_quantizers, all_layer_losses, all_condition_numbers
+    return all_quantizers, all_layer_losses, all_condition_numbers, quant_records
 
 
 # ── Shared expert-loss accounting ─────────────────────────────────────────────
@@ -454,6 +402,185 @@ def _process_expert_losses(losses, expert_losses, handler):
 
 # ── Parallel Hessian collection path ─────────────────────────────────────────
 
+def _make_h_hook(acc):
+    """Forward hook: feed the module input into a Hessian accumulator."""
+    def _hook(module, inp, out):
+        acc.add_batch(inp[0], out)
+    return _hook
+
+
+def _collect_hessians_grouped(
+    model, layers, handler, calibration_data, device, cache,
+    pending, layer_group_size, quant_format, nvfp4_block_size,
+):
+    """Collect Hessians for `pending` layers in memory-bounded groups (P0.4).
+
+    For each group of <= layer_group_size layers:
+      1. Attach lightweight _GptqH accumulators (standard linears) and the
+         expert forward patch (MoE layers) to the GROUP ONLY.
+      2. Run every calibration sample through the FULL, UNCHANGED model —
+         statistics always come from clean source activations (no cascade).
+      3. Detach, verify coverage, and stream the group's Hessians to the
+         cache (atomic write + manifest entry) before touching the next group.
+
+    Peak accumulator memory is bounded by one group instead of the whole
+    model (~51 GB of expert Hessians for GPT-OSS-20B — the P0.4 OOM).
+    Costs ceil(len(pending)/layer_group_size) full-model passes in exchange.
+
+    Fail-closed behavior:
+      - Any exception during a calibration forward aborts the run (a skipped
+        sample would silently give different groups different sample sets).
+      - A standard linear with zero samples after a full pass aborts (its
+        hook cannot legitimately miss tokens — something is broken).
+      - An MoE layer whose patched expert forward was never invoked aborts
+        (e.g. a fused-kernel forward bypassed the patch).
+      - NaN/Inf Hessians are rejected by the cache at save time.
+    """
+    import resource
+    import time as _time
+
+    from expert_dispatch import _GptqH
+
+    n_passes = (len(pending) + layer_group_size - 1) // layer_group_size
+    print(f"[GPTQ] Grouped Hessian collection: {len(pending)} pending layer(s), "
+          f"group size {layer_group_size} → {n_passes} full-model pass(es), "
+          f"{len(calibration_data)} samples each")
+
+    model.eval()
+
+    for pass_idx in range(n_passes):
+        group = pending[pass_idx * layer_group_size:(pass_idx + 1) * layer_group_size]
+        t0 = _time.perf_counter()
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+
+        # ── Attach accumulators/hooks to this group only ──────────────────────
+        # MoE layers OUTSIDE the group get a passthrough patch pinning them to
+        # the same expert-forward implementation the collection patch uses —
+        # otherwise transformers' dispatched implementation (batched_mm etc.,
+        # ULP-different from the loop) would make downstream activations, and
+        # therefore Hessians, depend on which layers are in the group.
+        group_state = {}
+        handles = []
+        passthrough_tokens = {}
+        group_set = set(group)
+        if handler is not None:
+            for li, layer in enumerate(layers):
+                if li not in group_set and handler.has_moe(layer):
+                    passthrough_tokens[li] = handler.attach_passthrough(layer)
+
+        for li in group:
+            layer = layers[li]
+            raw_subset = find_layers(layer)
+            subset = (handler.filter_standard_layers(layer, raw_subset)
+                      if handler is not None else raw_subset)
+
+            acc_map = {}
+            for name, linear in subset.items():
+                acc = _GptqH(linear.in_features)
+                handles.append(linear.register_forward_hook(_make_h_hook(acc)))
+                acc_map[name] = acc
+
+            has_experts = (handler is not None and handler.has_moe(layer))
+            acc_state = None
+            hook_token = None
+            if has_experts:
+                acc_state = handler.setup_accumulators(
+                    layer, device, quant_format, nvfp4_block_size
+                )
+                hook_token = handler.attach_hooks(layer, acc_state)
+
+            group_state[li] = {
+                "acc_map":     acc_map,
+                "has_experts": has_experts,
+                "acc_state":   acc_state,
+                "hook_token":  hook_token,
+            }
+
+        # ── One pass over ALL calibration samples, unchanged model ────────────
+        try:
+            with torch.no_grad():
+                for i, (input_ids, _) in enumerate(calibration_data):
+                    ids = input_ids.to(device)
+                    # Fail closed: a raised sample must abort, not be skipped —
+                    # otherwise different groups would accumulate over
+                    # different effective sample sets.
+                    model(ids, attention_mask=torch.ones_like(ids))
+                    if (i + 1) % 64 == 0:
+                        print(f"    group {pass_idx + 1}/{n_passes}: "
+                              f"{i + 1}/{len(calibration_data)} samples")
+        finally:
+            for h in handles:
+                h.remove()
+            for li in group:
+                gs = group_state[li]
+                if gs["hook_token"] is not None:
+                    handler.detach_hooks(layers[li], gs["hook_token"])
+            for li, token in passthrough_tokens.items():
+                if token is not None:
+                    handler.detach_passthrough(layers[li], token)
+
+        # ── Coverage checks (fail closed) ─────────────────────────────────────
+        for li in group:
+            gs = group_state[li]
+            for name, acc in gs["acc_map"].items():
+                if acc.nsamples == 0 or acc.H is None:
+                    raise RuntimeError(
+                        f"Layer {li} sublayer '{name}' received 0 calibration "
+                        f"samples after a full-model pass — hook failure or "
+                        f"dead module. Refusing to continue (fail closed)."
+                    )
+            if gs["has_experts"]:
+                counter = gs["acc_state"].get("call_counter")
+                if counter is not None and counter.get("n", 0) == 0:
+                    raise RuntimeError(
+                        f"Layer {li}: the patched expert forward was never "
+                        f"invoked during calibration — a fused kernel forward "
+                        f"(e.g. MegaBlocks via kernelize()) likely bypassed "
+                        f"the patch. Expert Hessians would be silently empty. "
+                        f"Disable kernelization for calibration."
+                    )
+
+        gpu_peak = (torch.cuda.max_memory_allocated()
+                    if torch.cuda.is_available() else 0)
+
+        # ── Stream this group to the cache, then free ─────────────────────────
+        group_bytes = 0
+        for li in group:
+            gs = group_state[li]
+            payload = {
+                "attn": {
+                    name: {"H": acc.H.cpu(), "nsamples": acc.nsamples}
+                    for name, acc in gs["acc_map"].items()
+                },
+                "experts": (handler.hessian_state_to_save(gs["acc_state"])
+                            if gs["has_experts"] else None),
+            }
+            cache.save_layer(li, payload)
+            group_bytes += cache.manifest["layers"][str(li)]["bytes"]
+
+            for acc in gs["acc_map"].values():
+                acc.H = None
+            if gs["has_experts"]:
+                handler.free_hessians(gs["acc_state"])
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        elapsed = _time.perf_counter() - t0
+        host_hwm_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        stats = {
+            "layers": list(group),
+            "seconds": round(elapsed, 2),
+            "gpu_peak_bytes": int(gpu_peak),
+            "host_maxrss_kb": int(host_hwm_kb),
+            "cache_bytes_written": int(group_bytes),
+        }
+        cache.record_group_stats(stats)
+        print(f"[GPTQ]   group {pass_idx + 1}/{n_passes} (layers {group}): "
+              f"{elapsed:.1f}s, GPU peak {gpu_peak / 1024**3:.1f} GB, "
+              f"cache +{group_bytes / 1024**2:.0f} MB")
+
+
 def _run_parallel(
     model, layers, arch_type, handler, is_moe, embedding_modules,
     calibration_data, nsamples, device,
@@ -462,180 +589,160 @@ def _run_parallel(
     mixed_precision_threshold,
     hessian_cache_dir, model_name, dataset, nsamples_key, seqlen, seed,
     all_quantizers, all_layer_losses, all_condition_numbers,
+    hessian_layer_group_size=1,
+    artifact_dir=None, layer_prefixes=None, quant_records=None,
 ):
-    # ── Resolve cache path upfront ────────────────────────────────────────────
-    # Must be done BEFORE Phase 1 setup so we know whether to allocate expert
-    # Hessian accumulators (which can be 50+ GB for large MoE models).
-    cache_dir = (
-        _hessian_cache_dir(
-            hessian_cache_dir, model_name, dataset,
-            nsamples_key, seqlen, seed
+    """Parallel-Hessian pipeline: grouped collection (P0.4) + quantize-from-cache.
+
+    Phase 1 collects Hessians from the unchanged model in memory-bounded layer
+    groups, streaming each group to a manifest-verified on-disk cache (see
+    _collect_hessians_grouped). Interrupted runs resume: layers whose cache
+    entries are complete (file + SHA-256 verified against the manifest) are
+    skipped, and the calibration token stream is reloaded from the immutable
+    token cache so every pass sees identical data.
+
+    Phase 2 quantizes layer-by-layer from the cache: GPTQ instances and expert
+    shims are created lazily per layer, so at most one layer's Hessians are
+    resident at a time.
+    """
+    from hessian_cache import HessianCache
+
+    if hessian_cache_dir is None:
+        raise ValueError(
+            "parallel_hessian=True requires hessian_cache_dir: the grouped "
+            "collection design streams each layer group to disk to bound "
+            "memory (P0.4). Pass a cache directory, or use "
+            "parallel_hessian=False (sequential, cascade-prone, debug only)."
         )
-        if hessian_cache_dir is not None
-        else None
+
+    cache_dir = _hessian_cache_dir(
+        hessian_cache_dir, model_name, dataset, nsamples_key, seqlen, seed
     )
-    use_cache = (cache_dir is not None
-                 and _hessian_cache_complete(cache_dir, len(layers)))
+    cache = HessianCache(
+        cache_dir,
+        n_layers=len(layers),
+        meta={
+            "model_name": str(model_name),
+            "dataset": dataset,
+            "nsamples": int(nsamples_key),
+            "seqlen": int(seqlen),
+            "seed": int(seed),
+        },
+    )
 
-    # ── Phase 1: setup ────────────────────────────────────────────────────────
-    # When using cache, skip expert accumulator allocation entirely — they will
-    # be created lazily one layer at a time in Phase 2.  This prevents
-    # allocating 50+ GB of zero Hessian matrices upfront.
-    print("[GPTQ] Parallel mode — setting up Hessian accumulators for all layers...")
+    # Immutable, hashed token cache: the first run persists the tokens; any
+    # resumed run reloads them (and verifies the hash) so all groups —
+    # including ones collected after an interruption — see the same stream.
+    calibration_data = cache.ensure_tokens(calibration_data)
 
-    layer_data  = {}
-    all_handles = []
-
-    def make_hook(g):
-        def _hook(module, inp, out):
-            g.add_batch(inp[0], out)
-        return _hook
-
-    for layer_idx, layer in enumerate(layers):
-        raw_subset = find_layers(layer)
-        # For DeepSeek V2, filter out expert linears handled by the handler
-        subset = (handler.filter_standard_layers(layer, raw_subset)
-                  if handler is not None else raw_subset)
-
-        gptq_map = {}
-        for name, linear in subset.items():
-            g = GPTQ(linear)
-            g.quantizer = _make_quantizer(
-                quant_format, device,
-                group_size=group_size, nvfp4_block_size=nvfp4_block_size
-            )
-            if not use_cache:
-                handle = linear.register_forward_hook(make_hook(g))
-                all_handles.append(handle)
-            gptq_map[name] = g
-
-        has_experts = (handler is not None and handler.has_moe(layer))
-        acc_state   = None
-        hook_token  = None
-
-        # Only allocate expert Hessian accumulators when we need the forward
-        # pass (i.e. no valid cache).  When cache exists, acc_state is created
-        # lazily per-layer in Phase 2 to keep RAM bounded.
-        if has_experts and not use_cache:
-            acc_state  = handler.setup_accumulators(
-                layer, device, quant_format, nvfp4_block_size
-            )
-            hook_token = handler.attach_hooks(layer, acc_state)
-
-        layer_data[layer_idx] = {
-            "subset":      subset,
-            "gptq_map":    gptq_map,
-            "has_experts": has_experts,
-            "acc_state":   acc_state,
-            "hook_token":  hook_token,
-        }
-
-    # ── Phase 1: forward pass (or skip if cache is valid) ────────────────────
-    if use_cache:
-        print(f"[GPTQ] Found Hessian cache at {cache_dir} — skipping forward pass.")
-        # Hooks were never registered; nothing to remove.
-    else:
-        print(
-            f"[GPTQ] Parallel mode — running {nsamples_key} samples through original "
-            f"BF16 model to collect all Hessians..."
-        )
+    # ── Phase 1: grouped collection of pending layers ─────────────────────────
+    pending = cache.pending_layers()
+    if pending:
         for mod in embedding_modules:
             mod.to(device)
+        _collect_hessians_grouped(
+            model, layers, handler, calibration_data, device, cache,
+            pending, hessian_layer_group_size, quant_format, nvfp4_block_size,
+        )
+    else:
+        print(f"[GPTQ] Hessian cache complete at {cache_dir} — "
+              f"skipping collection.")
 
-        model.eval()
-        with torch.no_grad():
-            for i, (input_ids, _) in enumerate(calibration_data):
-                try:
-                    ids = input_ids.to(device)
-                    model(ids, attention_mask=torch.ones_like(ids))
-                except Exception as exc:
-                    warnings.warn(
-                        f"[GPTQ] Sample {i} raised {type(exc).__name__}: {exc}; skipping."
-                    )
-                if (i + 1) % 64 == 0:
-                    print(f"  {i + 1}/{nsamples_key} samples processed")
+    if not cache.is_complete():
+        raise RuntimeError(
+            f"Hessian cache at {cache_dir} is still incomplete after "
+            f"collection — refusing to quantize from a partial cache."
+        )
+    print(f"[GPTQ] Hessian collection complete "
+          f"({cache.total_bytes() / 1024**3:.1f} GB cached). "
+          f"Starting quantization...")
 
-        for mod in embedding_modules:
-            mod.cpu()
-
-        for h in all_handles:
-            h.remove()
-
-        for layer_idx, ld in layer_data.items():
-            if ld["hook_token"] is not None:
-                handler.detach_hooks(layers[layer_idx], ld["hook_token"])
-
-        torch.cuda.empty_cache()
-
-        if cache_dir is not None:
-            print(f"[GPTQ] Saving Hessians to {cache_dir} (streaming per-layer to cap RAM)...")
-            _save_hessians(cache_dir, layer_data, handler, free_after_save=True)
-
-    print("[GPTQ] Hessian collection complete. Starting quantization...")
-
-    # ── Phase 2: sequential quantization ─────────────────────────────────────
+    # ── Phase 2: sequential quantization from cache ───────────────────────────
     for layer_idx in range(len(layers)):
         layer = layers[layer_idx]
         layer.to(device)
 
-        ld       = layer_data[layer_idx]
-        subset   = ld["subset"]
-        gptq_map = ld["gptq_map"]
+        raw_subset = find_layers(layer)
+        subset = (handler.filter_standard_layers(layer, raw_subset)
+                  if handler is not None else raw_subset)
+        has_experts = (handler is not None and handler.has_moe(layer))
 
         print(f"[GPTQ] Layer {layer_idx}/{len(layers)-1}: ", end="", flush=True)
         if is_moe:
             non_exp_cnt = sum(1 for n in subset if "experts" not in n)
             print(f"({non_exp_cnt} attn/gate) ", end="", flush=True)
 
-        # When cache was used (acc_state is None), create expert accumulators
-        # now for just this one layer before loading Hessians from disk.
-        if use_cache and ld["has_experts"] and ld["acc_state"] is None:
-            ld["acc_state"] = handler.setup_accumulators(
+        payload = cache.load_layer(layer_idx)
+
+        # Lazy per-layer GPTQ instances: only this layer's Hessians are
+        # resident. Transplanting (H, nsamples) into GPTQ is numerically
+        # identical to native accumulation (test_hessian_canonical.py).
+        gptq_map = {}
+        for name, linear in subset.items():
+            entry = payload["attn"].get(name)
+            if entry is None or entry["H"] is None or entry["nsamples"] == 0:
+                raise RuntimeError(
+                    f"Layer {layer_idx} sublayer '{name}' has no cached "
+                    f"Hessian — the cache is inconsistent with this model. "
+                    f"Refusing to fall back silently (fail closed)."
+                )
+            g = GPTQ(linear)
+            g.quantizer = _make_quantizer(
+                quant_format, device,
+                group_size=group_size, nvfp4_block_size=nvfp4_block_size
+            )
+            g.H = entry["H"].to(device)
+            g.nsamples = entry["nsamples"]
+            gptq_map[name] = g
+
+        # ── Per-tensor global scales (D-010), fixed BEFORE quantization ───────
+        # vLLM fuses q/k/v into one GEMM and applies max(weight_scale_2)
+        # WITHOUT rescaling the fp8 group scales, so q/k/v must share one
+        # global scale or the fused dequantization drifts.
+        if quant_format == "nvfp4":
+            qkv = [n for n in gptq_map
+                   if n.rsplit(".", 1)[-1] in ("q_proj", "k_proj", "v_proj")]
+            shared = None
+            if qkv:
+                amax = max(subset[n].weight.detach().abs().amax().item()
+                           for n in qkv)
+                shared = amax / (6.0 * 448.0)
+            for name, g in gptq_map.items():
+                if name in qkv:
+                    g.quantizer.set_global_scale(shared)
+                else:
+                    g.quantizer.set_global_scale_from(subset[name].weight)
+
+        acc_state = None
+        if has_experts:
+            if payload.get("experts") is None:
+                raise RuntimeError(
+                    f"Layer {layer_idx} has MoE experts but the cache holds "
+                    f"no expert Hessians — cache/model mismatch (fail closed)."
+                )
+            acc_state = handler.setup_accumulators(
                 layer, device, quant_format, nvfp4_block_size
             )
-
-        # Reload Hessians from cache on demand (covers both the streaming-save
-        # path where g.H was freed, and the cache-hit path where g.nsamples==0
-        # because GPTQ.__init__ uses a zero tensor rather than None for H).
-        if cache_dir is not None and any(
-            g.H is None or g.nsamples == 0 for g in gptq_map.values()
-        ):
-            payload = torch.load(
-                cache_dir / f"layer_{layer_idx:02d}.pt",
-                map_location="cpu",
-                weights_only=False,
-            )
-            for name, g in gptq_map.items():
-                if name in payload["attn"]:
-                    g.H        = payload["attn"][name]["H"]
-                    g.nsamples = payload["attn"][name]["nsamples"]
-            if (handler is not None and ld["has_experts"]
-                    and ld["acc_state"] is not None
-                    and payload.get("experts") is not None):
-                handler.load_hessian_state(ld["acc_state"], payload["experts"])
-
-        for g in gptq_map.values():
-            if g.H is not None:
-                g.H = g.H.to(device)
+            handler.load_hessian_state(acc_state, payload["experts"])
 
         losses             = {}
         layer_cond_numbers = {}
         rtn_count          = 0
         bf16_count         = 0
 
-        for name, g in gptq_map.items():
-            if g.nsamples == 0:
-                quantizer = _rtn_quantize(
-                    subset[name], quant_format, device,
-                    group_size=group_size, nvfp4_block_size=nvfp4_block_size
-                )
-                all_quantizers[f"layer.{layer_idx}.{name}"] = quantizer
-                losses[name] = "RTN"
-                rtn_count += 1
-                g.free()
-            else:
-                orig_weight = subset[name].weight.data.clone()
+        capture = artifact_dir is not None
+        prefix = (layer_prefixes or {}).get(layer_idx, f"layers.{layer_idx}")
+        layer_artifacts = {}      # (full_name, expert_idx|None) → artifact
+        layer_records   = []      # manifest records for this layer
 
+        for name, g in gptq_map.items():
+            orig_weight = subset[name].weight.data.clone()
+            out_f, in_f = g.rows, g.columns
+            full_name = f"{prefix}.{name}"
+
+            if capture:
+                g.quantizer.begin_capture(out_f, in_f)
+            try:
                 if mode == "blockwise":
                     if log_condition:
                         loss, cond_nums = g.fasterquant_blockwise(
@@ -649,36 +756,107 @@ def _run_parallel(
                         )
                 else:
                     loss = g.fasterquant(blocksize=blocksize, percdamp=percdamp)
+            except Exception:
+                if capture:
+                    g.quantizer.abort_capture()
+                raise
 
-                if (mixed_precision_threshold is not None
-                        and _is_valid_loss(loss)
-                        and loss > mixed_precision_threshold):
-                    subset[name].weight.data.copy_(orig_weight)
-                    losses[name] = "BF16"
-                    bf16_count += 1
-                else:
-                    losses[name] = loss
-                    all_quantizers[f"layer.{layer_idx}.{name}"] = g.quantizer
+            fell_back = (mixed_precision_threshold is not None
+                         and _is_valid_loss(loss)
+                         and loss > mixed_precision_threshold)
 
-                del orig_weight
-                g.free()
+            record = {
+                "name": full_name,
+                "param": f"{full_name}.weight",
+                "kind": "linear",
+                "layer_index": layer_idx,
+                "projection": name.rsplit(".", 1)[-1],
+                "expert_index": None,
+                "orig_shape": [out_f, in_f],
+                "orientation": "out_in",
+                "orig_dtype": str(subset[name].weight.dtype),
+                "requested_format": quant_format,
+                "disposition": None,
+                "reason": None,
+                "gptq_blocksize": blocksize,
+                "scale_block_size": nvfp4_block_size,
+                "loss": loss if _is_valid_loss(loss) else None,
+                "normalized_loss": (loss / (out_f * in_f)
+                                    if _is_valid_loss(loss) else None),
+                "hessian_nsamples": g.nsamples,
+                "artifact": None,
+            }
+
+            if fell_back:
+                subset[name].weight.data.copy_(orig_weight)
+                losses[name] = "BF16"
+                bf16_count += 1
+                if capture:
+                    g.quantizer.abort_capture()
+                record["disposition"] = "BF16_FALLBACK"
+                record["reason"] = (f"loss {loss:.4f} > threshold "
+                                    f"{mixed_precision_threshold}")
+            else:
+                losses[name] = loss
+                all_quantizers[f"layer.{layer_idx}.{name}"] = g.quantizer
+                record["disposition"] = "GPTQ_NVFP4" if capture else None
+                if capture:
+                    from quant_artifacts import verify_artifact_matches
+                    art = g.quantizer.end_capture()
+                    # P0.6 invariant, enforced immediately: the artifact must
+                    # reproduce the QDQ weight bit-for-bit.
+                    verify_artifact_matches(art, subset[name].weight.data,
+                                            what=full_name)
+                    layer_artifacts[(full_name, None)] = art
+                    record["artifact"] = "pending"   # filled after shard write
+
+            if capture:
+                layer_records.append(record)
+            del orig_weight
+            g.free()
 
         # Expert quantization
-        if ld["has_experts"] and ld["acc_state"] is not None:
+        if has_experts and acc_state is not None:
             expert_losses = handler.quantize(
-                layer, ld["acc_state"],
+                layer, acc_state,
                 quant_format=quant_format,
                 device=device,
                 nvfp4_block_size=nvfp4_block_size,
                 blocksize=blocksize,
                 percdamp=percdamp,
                 threshold=mixed_precision_threshold,
+                capture_artifacts=capture,
             )
             rtn_delta, bf16_delta = _process_expert_losses(
                 losses, expert_losses, handler
             )
             rtn_count  += rtn_delta
             bf16_count += bf16_delta
+
+            if capture:
+                expert_records, expert_arts = handler.build_records(
+                    layer, expert_losses,
+                    layer_idx=layer_idx, prefix=prefix,
+                    quant_format=quant_format, blocksize=blocksize,
+                    nvfp4_block_size=nvfp4_block_size,
+                    acc_state=acc_state,
+                )
+                layer_records.extend(expert_records)
+                layer_artifacts.update(expert_arts)
+
+        # ── Stream this layer's exact artifacts to disk (P0.6) ────────────────
+        if capture:
+            from quant_artifacts import save_layer_artifacts, artifact_keys
+            if layer_artifacts:
+                shard = save_layer_artifacts(artifact_dir, layer_idx,
+                                             layer_artifacts)
+            else:
+                shard = None
+            for rec in layer_records:
+                if rec["artifact"] == "pending":
+                    keys = artifact_keys(rec["name"], rec["expert_index"])
+                    rec["artifact"] = {"file": shard, **keys}
+            quant_records.extend(layer_records)
 
         all_layer_losses[layer_idx] = losses
         if layer_cond_numbers:
@@ -700,14 +878,14 @@ def _run_parallel(
 
         layer.cpu()
 
-        # Free this layer's Hessians from CPU/GPU RAM
-        for g in ld["gptq_map"].values():
+        # Free this layer's Hessians before moving to the next
+        for g in gptq_map.values():
             g.H = None
-        if handler is not None and ld["acc_state"] is not None:
-            handler.free_hessians(ld["acc_state"])
-        del layer_data[layer_idx]
+        if handler is not None and acc_state is not None:
+            handler.free_hessians(acc_state)
 
-        torch.cuda.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 # ── Sequential (legacy) path ──────────────────────────────────────────────────

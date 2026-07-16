@@ -311,9 +311,21 @@ class NVFP4Quantizer(BaseQuantizer):
     than once globally. This ensures each microscaling block gets a scale
     derived from the error-compensated weights at quantization time.
 
-    Scale computation:
-        raw_scale = amax(|W_micro_block|) / 6.0
-        scale = quantize_to_fp8_e4m3(raw_scale)   # hardware stores scale in FP8
+    Scale computation (ModelOpt / vLLM W4A16 convention, D-010):
+        global_scale = amax(|W_tensor|) / (6.0 * 448.0)        # fp32, per tensor
+        raw_scale    = amax(|W_micro_block|) / 6.0
+        scale_fp8    = quantize_to_fp8_e4m3(raw_scale / global_scale)
+        effective    = scale_fp8 * global_scale                # used for QDQ
+        dequant      = E2M1(code) * scale_fp8 * global_scale
+
+    Normalizing block scales by a per-tensor global scale keeps them in the
+    upper fp8-e4m3 range (near 448) instead of the subnormal region, and is
+    the exact form vLLM's Marlin W4A16 kernel consumes (weight_scale_2).
+    The global scale must be FIXED before GPTQ starts (computed from the
+    original tensor) because blocks are quantized progressively on
+    error-compensated weights. Set it via set_global_scale()/
+    set_global_scale_from(); when unset, a global scale of 1.0 is used
+    (legacy behavior — raw fp8 block scales).
     """
 
     # E2M1 representable magnitudes (sign is handled separately)
@@ -334,6 +346,82 @@ class NVFP4Quantizer(BaseQuantizer):
         self.block_size = block_size
         # Keep grid on the target device to avoid repeated .to() calls
         self._grid = self._E2M1_GRID.to(device)
+        # Exact-artifact capture state (P0.6) — see begin_capture()
+        self._cap = None
+        # Per-tensor global scale (D-010). None → 1.0 (legacy raw fp8 scales).
+        self.global_scale = None
+        # fp8-stored form of the current block scales (what capture records)
+        self._scale_fp8 = None
+
+    # ── Per-tensor global scale (D-010) ───────────────────────────────────────
+
+    def set_global_scale(self, value: float):
+        """Pin the per-tensor global scale (fp32 scalar).
+
+        Use one shared value across tensors that a serving engine fuses into
+        a single GEMM (e.g. q/k/v): vLLM applies max(weight_scale_2) to the
+        fused weight WITHOUT rescaling the fp8 group scales.
+        """
+        self.global_scale = float(max(value, 1e-12))
+
+    def set_global_scale_from(self, w):
+        """Compute the ModelOpt global scale amax/(6·448) from a weight tensor."""
+        self.set_global_scale(w.detach().abs().amax().item() / (6.0 * self._FP8_MAX))
+
+    # ── Exact-artifact capture (P0.6) ─────────────────────────────────────────
+    # GPTQ's per-block scales are computed on error-compensated weights and
+    # then discarded; they CANNOT be recovered from the QDQ output. Capture
+    # records the exact codes and scales as quantize_dequantize() produces
+    # them, so Stage 7 can serialize the model GPTQ actually optimized.
+
+    def begin_capture(self, out_features: int, in_features: int):
+        """Start recording exact codes/scales for one [out, in] tensor.
+
+        The subsequent quantize_dequantize(x, col_start=…) calls must tile the
+        full column range exactly once (fasterquant_blockwise's left-to-right
+        sweep, or a single full-width RTN call). end_capture() verifies
+        coverage.
+        """
+        if in_features % self.block_size != 0:
+            raise ValueError(
+                f"capture requires in_features % block_size == 0 "
+                f"(got {in_features} % {self.block_size})"
+            )
+        self._cap = {
+            "nibbles": torch.zeros(out_features, in_features, dtype=torch.uint8),
+            "scales":  torch.zeros(out_features, in_features // self.block_size,
+                                   dtype=torch.float8_e4m3fn),
+            "covered": torch.zeros(in_features, dtype=torch.bool),
+            "shape":   (out_features, in_features),
+        }
+
+    def end_capture(self):
+        """Finish capture and return a QuantizedTensorArtifact.
+
+        Raises if any column was never quantized (incomplete sweep).
+        """
+        from quant_artifacts import QuantizedTensorArtifact, pack_nibbles
+
+        cap, self._cap = self._cap, None
+        if cap is None:
+            raise RuntimeError("end_capture() without begin_capture()")
+        if not bool(cap["covered"].all()):
+            missing = int((~cap["covered"]).sum())
+            raise RuntimeError(
+                f"capture incomplete: {missing} columns were never quantized"
+            )
+        s2 = self.global_scale if self.global_scale is not None else 1.0
+        return QuantizedTensorArtifact(
+            codes=pack_nibbles(cap["nibbles"]),
+            scales=cap["scales"],
+            block_size=self.block_size,
+            shape=cap["shape"],
+            global_scale=torch.tensor([s2], dtype=torch.float32),
+        )
+
+    def abort_capture(self):
+        """Drop any in-progress capture state (e.g. on quantization failure)."""
+        self._cap = None
 
     def find_params(self, x, weight=True):
         """Compute FP8 E4M3 microscaling factors for blocks of `block_size` columns.
@@ -365,21 +453,28 @@ class NVFP4Quantizer(BaseQuantizer):
         amax = x_blocked.abs().amax(dim=2).clamp(min=1e-12)  # [out_features, n_blocks]
         raw_scale = amax / self._E2M1_MAX
 
-        # Quantize scale to FP8 E4M3 (hardware stores scale in FP8).
-        # raw_scale = amax/6.0 for typical neural network weights is in ~[0.001, 100],
-        # well within FP8 E4M3 range (~0.002 to 448). Cast directly — do NOT normalize
-        # by FP8_MAX first, which would shrink values into [0, 1/448] and cause most
-        # to underflow to 0 during the FP8 cast.
-        self.scale = raw_scale.to(torch.float8_e4m3fn).to(torch.float32).to(self.device)
+        # Store the block scales in FP8 E4M3 — normalized by the per-tensor
+        # global scale when set (D-010 / ModelOpt convention: keeps fp8
+        # values in the high range instead of the coarse subnormal region),
+        # raw otherwise (legacy). The effective per-block scale used for QDQ
+        # is always fp8_value * global, so QDQ, capture, and the serving
+        # kernel see the identical quantization.
+        s2 = self.global_scale if self.global_scale is not None else 1.0
+        self._scale_fp8 = (raw_scale / s2).clamp(max=self._FP8_MAX) \
+                                          .to(torch.float8_e4m3fn)
+        self.scale = (self._scale_fp8.to(torch.float32) * s2).to(self.device)
 
-    def _round_to_e2m1(self, x_scaled):
+    def _round_to_e2m1(self, x_scaled, return_nibbles=False):
         """Snap each value to the nearest point in the E2M1 grid (sign-preserving).
 
         Args:
             x_scaled: Tensor already divided by its block scale (arbitrary shape).
+            return_nibbles: If True, also return the 4-bit codes
+                (grid_index | sign_bit << 3) as uint8 — used by artifact capture.
 
         Returns:
-            Tensor of same shape with values snapped to ±{0, 0.5, ..., 6.0}.
+            Tensor of same shape with values snapped to ±{0, 0.5, ..., 6.0},
+            or (values, nibbles) when return_nibbles=True.
         """
         grid = self._grid.to(x_scaled.device)
         sign = x_scaled.sign()
@@ -387,7 +482,13 @@ class NVFP4Quantizer(BaseQuantizer):
         # Compute L1 distance to each of the 8 grid points: [..., 8]
         dists = (abs_x.unsqueeze(-1) - grid).abs()
         idx = dists.argmin(dim=-1)
-        return sign * grid[idx]
+        values = sign * grid[idx]
+        if not return_nibbles:
+            return values
+        # Sign bit from strict negativity: -0.0 inputs get idx 0, sign bit 1 —
+        # dequantizes to -0.0, which compares equal to +0.0.
+        nibbles = (idx | ((x_scaled < 0).long() << 3)).to(torch.uint8)
+        return values, nibbles
 
     def quantize_dequantize(self, x, col_idx=None, col_start=0):
         """Quantize to E2M1 and dequantize using the FP8 microscaling factors.
@@ -396,11 +497,16 @@ class NVFP4Quantizer(BaseQuantizer):
         corresponds to the current x — col_start is not used for scale
         indexing (unlike group quantizers that hold global pre-computed scales).
 
+        When a capture is active (begin_capture), the exact nibble codes and
+        FP8 scales for columns [col_start, col_start+in_features) are recorded
+        so the artifact matches this call's output bit-for-bit (P0.6).
+
         Args:
             x: Weight block [out_features, in_features].
-            col_idx: Unused for NVFP4 (per-block params make column indexing unnecessary).
-            col_start: Unused for scale indexing; scales are always local to
-                       the current block set by the most recent find_params() call.
+            col_idx: Unused for NVFP4 (per-block params make column indexing
+                     unnecessary); must be None while capturing.
+            col_start: Column offset of x within the full weight matrix. Not
+                       used for scale indexing; required for capture placement.
 
         Returns:
             Dequantized weights in float32, same shape as x.
@@ -422,7 +528,29 @@ class NVFP4Quantizer(BaseQuantizer):
         s = self.scale[:, :n_blocks].unsqueeze(2)
 
         # Scale, snap to E2M1 grid, dequantize
-        x_quant = self._round_to_e2m1(x_blocked / s)
+        if self._cap is not None:
+            if col_idx is not None:
+                raise RuntimeError(
+                    "artifact capture supports the blockwise path only "
+                    "(col_idx per-column calls cannot be captured)"
+                )
+            if pad:
+                raise RuntimeError(
+                    "artifact capture requires block-aligned widths "
+                    f"(got {in_features} with block_size {bs})"
+                )
+            x_quant, nibbles = self._round_to_e2m1(x_blocked / s,
+                                                   return_nibbles=True)
+            self._cap["nibbles"][:, col_start:col_start + in_features] = \
+                nibbles.reshape(out_features, -1)[:, :in_features].cpu()
+            sb = col_start // bs
+            # Record the fp8-stored form (normalized by global_scale when
+            # set) — exactly what find_params produced for this block sweep.
+            self._cap["scales"][:, sb:sb + n_blocks] = \
+                self._scale_fp8[:, :n_blocks].cpu()
+            self._cap["covered"][col_start:col_start + in_features] = True
+        else:
+            x_quant = self._round_to_e2m1(x_blocked / s)
         x_dequant = (x_quant * s).reshape(out_features, -1)
 
         # Strip padding to return original shape

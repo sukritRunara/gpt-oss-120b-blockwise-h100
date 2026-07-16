@@ -1,0 +1,8 @@
+# .venv-serve — serving environment (top-level intent; see serve-requirements.lock.txt)
+# Purpose: vLLM serving, OpenAI-compatible API tests, async serving benchmarks.
+# vLLM pins its own torch build — do NOT add a separate torch pin here.
+vllm
+openai
+aiohttp
+requests
+pytest

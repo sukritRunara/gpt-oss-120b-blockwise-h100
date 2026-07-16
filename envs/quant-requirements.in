@@ -1,0 +1,16 @@
+# .venv-quant — quantization environment (top-level intent; see quant-requirements.lock.txt)
+# Purpose: HF model loading + MXFP4 dequant, calibration, blockwise GPTQ, QDQ
+# validation, export, unit tests. Serving lives in .venv-serve (see serve-requirements.in).
+torch
+transformers
+accelerate
+datasets
+safetensors
+huggingface_hub
+# GPT-OSS MXFP4 decode path in transformers pulls triton kernels via `kernels`
+kernels
+sentencepiece
+protobuf
+numpy
+tqdm
+pytest

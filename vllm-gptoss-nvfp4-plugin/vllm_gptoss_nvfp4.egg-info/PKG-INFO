@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: vllm-gptoss-nvfp4
+Version: 0.1.0
+Summary: vLLM 0.25.1 patches to serve GPT-OSS ModelOpt W4A16_NVFP4 checkpoints (biases + swigluoai constants + scale_2 loader fix)
+Requires-Python: >=3.10

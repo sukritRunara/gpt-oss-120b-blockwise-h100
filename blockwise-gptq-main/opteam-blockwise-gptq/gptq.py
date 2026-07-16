@@ -13,6 +13,48 @@ import torch.nn as nn
 import math
 
 
+def accumulate_hessian(H, nsamples, inp):
+    """Canonical running-Hessian update (P0.3).
+
+    Maintains the invariant
+        H = (2 / N) * Σ_rows x xᵀ            (N = total flattened rows seen)
+    so every activation row is weighted equally regardless of how the stream
+    was chunked. This is the single accumulation convention for the entire
+    pipeline — GPTQ.add_batch and expert-side _GptqH.add_batch both call this
+    function. "Sample count" (nsamples/N) always means FLATTENED ACTIVATION
+    ROWS (batch × seq for 3D inputs, rows for 2D), not sequences or batches.
+
+    The constant factor 2 matches the upstream ist-daslab GPTQ convention.
+    Uniform scaling of H does not change fasterquant results (Hinv-based error
+    compensation and percdamp-relative damping are scale-invariant), but the
+    factor is kept so cached Hessians stay bit-compatible with upstream tools.
+
+    Args:
+        H:        Running Hessian [in_features, in_features] (float32) or a
+                  fresh zero tensor. Updated out-of-place and returned.
+        nsamples: Rows accumulated so far.
+        inp:      New activations [rows, in_features] or [batch, seq, in_features],
+                  any float dtype, already on the same device as H.
+
+    Returns:
+        (H, new_nsamples)
+    """
+    if inp.dim() == 3:
+        inp = inp.reshape(-1, inp.shape[-1])
+    inp = inp.float()
+    n = inp.shape[0]
+    if n == 0:
+        return H, nsamples
+
+    new_nsamples = nsamples + n
+    # Downweight old contribution: (2/N_old)·S_old → (2/N_new)·S_old
+    H = H * (nsamples / new_nsamples)
+    # Add new contribution at (2/N_new)
+    x = math.sqrt(2.0 / new_nsamples) * inp.t()
+    H = H + x @ x.t()
+    return H, new_nsamples
+
+
 class GPTQ:
     """GPTQ quantizer for a single nn.Linear layer.
 
@@ -38,21 +80,16 @@ class GPTQ:
     def add_batch(self, inp, out):
         """Accumulate Hessian from a calibration batch.
 
+        Delegates to accumulate_hessian() — the single canonical accumulation
+        convention (P0.3). H = (2/N)·Σ x xᵀ over flattened activation rows.
+
         Args:
             inp: Input activations, shape [batch, seq, in_features] or [batch, in_features].
             out: Output activations (unused, kept for hook compatibility).
         """
-        if inp.dim() == 3:
-            inp = inp.reshape(-1, inp.shape[-1])
-        batch_size = inp.shape[0]
-
-        inp = inp.float().to(self.dev)
-
-        # Incremental Hessian update
-        self.H *= self.nsamples / (self.nsamples + batch_size)
-        self.nsamples += batch_size
-        inp_scaled = math.sqrt(2.0 / self.nsamples) * inp.t()
-        self.H += inp_scaled @ inp_scaled.t()
+        self.H, self.nsamples = accumulate_hessian(
+            self.H, self.nsamples, inp.to(self.dev)
+        )
 
     def fasterquant(self, blocksize=128, percdamp=0.01):
         """Run the GPTQ fasterquant algorithm.

@@ -56,11 +56,9 @@ from pathlib import Path
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
 _REPO_ROOT  = Path(__file__).resolve().parents[1]
-_CODE_ROOT  = Path(
-    "/home/runara_dgx_spark_1/Itamar/projects"
-    "/Block-wise-GPTQ-GPT-OSS-20B-NVFP4"
-    "/opteam-blockwise-gptq"
-)
+# Repo-relative code root (P0.1 fix): the library lives at
+# <repo>/opteam-blockwise-gptq regardless of where the repo is checked out.
+_CODE_ROOT = Path(__file__).resolve().parents[1] / "opteam-blockwise-gptq"
 
 if not _CODE_ROOT.exists():
     raise RuntimeError(f"Code root not found: {_CODE_ROOT}")
@@ -145,6 +143,17 @@ def _parse_args():
                    help="Sublayers with GPTQ loss above this threshold are kept in "
                         "BF16 instead of being quantized. Set to 0 to quantize "
                         "everything. (default: 100.0)")
+    p.add_argument("--hessian_cache_dir", type=Path,
+                   default=_REPO_ROOT / "hessian_cache",
+                   help="Root directory for the resumable Hessian cache "
+                        "(default: <repo>/hessian_cache). Interrupted runs "
+                        "resume from completed layers automatically.")
+    p.add_argument("--hessian_layer_group_size", type=int, default=1,
+                   help="Layers per Hessian-collection pass (P0.4). Peak "
+                        "accumulator memory scales with this; collection time "
+                        "scales inversely. Keep at 1 for GPT-OSS-20B on a "
+                        "single H100 unless memory headroom is proven. "
+                        "(default: 1)")
     p.add_argument("--results", type=Path, default=None,
                    help="Path for the JSON results file "
                         "(default: results/stage5_<model_stem>_quantize.json)")
@@ -370,8 +379,14 @@ def main():
 
     mixed_threshold = args.mixed_precision_threshold if args.mixed_precision_threshold > 0 else None
 
+    # Exact-artifact capture (P0.6) is only implemented for nvfp4 + parallel;
+    # other formats run without a manifest (and Stage 7 will refuse them).
+    artifact_dir = None
+    if args.quant_format == "nvfp4" and not args.no_parallel_hessian:
+        artifact_dir = args.output_dir / "quant_artifacts"
+
     try:
-        all_quantizers, all_layer_losses, _ = gptq_quantize_model(
+        all_quantizers, all_layer_losses, _, quant_records = gptq_quantize_model(
             model,
             model_name,
             quant_format               = args.quant_format,
@@ -383,6 +398,9 @@ def main():
             percdamp                   = args.percdamp,
             parallel_hessian           = not args.no_parallel_hessian,
             mixed_precision_threshold  = mixed_threshold,
+            hessian_cache_dir          = str(args.hessian_cache_dir),
+            hessian_layer_group_size   = args.hessian_layer_group_size,
+            artifact_dir               = artifact_dir,
         )
     except Exception as e:
         print(f"\n[ERROR] gptq_quantize_model failed: {e}")
@@ -418,6 +436,48 @@ def main():
     
     print(f"  Saved in {time.perf_counter() - t_save:.1f} s")
 
+    # ── Write the tensor disposition manifest (P0.5) ─────────────────────────
+    manifest_path = None
+    if artifact_dir is not None and quant_records:
+        from quant_artifacts import write_quant_manifest
+
+        # Every parameter not covered by a record is excluded-by-policy:
+        # embeddings, norms, biases, router weights, lm_head, attention sinks.
+        covered = set()
+        for r in quant_records:
+            covered.add(r["param"])
+        excluded = []
+        for pname, p in model.named_parameters():
+            if pname in covered:
+                continue
+            excluded.append({
+                "param": pname,
+                "shape": list(p.shape),
+                "dtype": str(p.dtype),
+                "reason": "not an eligible Linear/expert weight "
+                          "(embedding, norm, bias, router, lm_head, or sink)",
+            })
+
+        run_config = {
+            "model": model_stem,
+            "model_path": str(args.model_path),
+            "quant_format": args.quant_format,
+            "dataset": args.dataset,
+            "n_calib": args.n_calib,
+            "seq_len": args.seq_len,
+            "seed": 0,
+            "gptq_blocksize": chosen_blocksize,
+            "nvfp4_block_size": 16,
+            "percdamp": args.percdamp,
+            "mixed_precision_threshold": mixed_threshold,
+        }
+        manifest_path = write_quant_manifest(
+            artifact_dir, quant_records, run_config, excluded
+        )
+        n_covered = len(quant_records)
+        print(f"  Manifest written: {manifest_path}")
+        print(f"    tensor records: {n_covered}, excluded params: {len(excluded)}")
+
     # ── Write results JSON ────────────────────────────────────────────────────
     from datetime import datetime, timezone
 
@@ -438,6 +498,7 @@ def main():
         "total_gptq_loss":           round(total_loss, 6),
         "quant_time_s":    round(quant_time, 2),
         "blocksize_sweep": sweep_results,
+        "manifest":        manifest_path,
         "timestamp":       datetime.now(timezone.utc).isoformat(),
     }
     args.results.write_text(json.dumps(results, indent=2))

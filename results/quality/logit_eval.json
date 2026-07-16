@@ -1,0 +1,31 @@
+{
+  "reference": {
+    "B": "/workspace/models/gpt-oss-20b-mxfp4-dequant-bf16"
+  },
+  "n_prompts": 24,
+  "created_utc": "2026-07-16T15:23:33Z",
+  "comparisons": {
+    "C": {
+      "path": "/workspace/models/gpt-oss-20b-mxfp4-dequant-rtn-nvfp4",
+      "cosine_mean": 0.9981647481520971,
+      "cosine_min": 0.9946588277816772,
+      "kl_mean": 0.025410646376258228,
+      "kl_max": 0.157104954123497,
+      "top1_agreement": 1.0,
+      "top10_overlap_mean": 0.9041666666666667,
+      "max_abs_logit_diff": 2.9375,
+      "greedy64_prefix_agreement_mean": 0.33984375
+    },
+    "D": {
+      "path": "/workspace/models/gpt-oss-20b-mxfp4-dequant-blockwise-gptq-nvfp4",
+      "cosine_mean": 0.9991619984308878,
+      "cosine_min": 0.9974324107170105,
+      "kl_mean": 0.011326462562768333,
+      "kl_max": 0.05561870336532593,
+      "top1_agreement": 1.0,
+      "top10_overlap_mean": 0.9375,
+      "max_abs_logit_diff": 2.0625,
+      "greedy64_prefix_agreement_mean": 0.361328125
+    }
+  }
+}
