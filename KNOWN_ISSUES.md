@@ -24,36 +24,16 @@ Hard-coded model paths in `test_vLLM_deploy_quantized_model.py:2,35`.
 Note stage7's `_CODE_ROOT` points at the repo root (not `opteam-blockwise-gptq/`) —
 the two path constants are inconsistent with each other as well.
 
-### 🔴 P0.5 — Stage 5 results JSON lacks the fields Stage 7 requires
-**Evidence:** Stage 5 writes only settings + `total_gptq_loss` + timing
-([stage5_quantize_model.py:425-442](blockwise-gptq-main/tests/stage5_quantize_model.py#L425-L442)).
-Stage 7 looks for `results["quantized_attn_keys"]` and `results["layer_losses"]`
-([stage7_save_modelopt.py:683](blockwise-gptq-main/tests/stage7_save_modelopt.py#L683)) —
-never produced by Stage 5 → falls through to the fail-open path (see P0.7).
-**Fix:** Full per-tensor disposition manifest (schema per handoff §P0.5); Stage 7 must
-hard-error on missing fields.
-
-### 🔴 P0.6 — Stage 7 re-quantizes instead of preserving GPTQ's exact codes
-**Evidence:** `pack_nvfp4` recomputes `amax/6.0 → FP8 scale → E2M1 snap` from the QDQ
-BF16 weights ([stage7_save_modelopt.py:117-179](blockwise-gptq-main/tests/stage7_save_modelopt.py#L117-L179)).
-**Analysis:** Stage 5's QDQ values are `grid × scale_gptq`, but a block's amax only
-recovers `scale_gptq` if some value hit grid-max 6.0 in that block; otherwise the FP8
-re-cast yields a different scale → different codes → the packed model is **not** the
-model GPTQ optimized (and not the model Stage 6 evaluated).
-**Fix:** Stage 5 must emit exact codes/scales (`QuantizedTensorArtifact`); Stage 7
-serializes them; invariant test `QDQ ≈ dequant(packed)`.
-
-### 🔴 P0.7 — Stage 7 cannot pack GPT-OSS experts, and fails open
-**Evidence:** Packing iterates `model.named_modules()` with
-`isinstance(module, nn.Linear)` ([stage7_save_modelopt.py:478-480](blockwise-gptq-main/tests/stage7_save_modelopt.py#L478-L480)).
-GPT-OSS experts are batched `nn.Parameter`s (`experts.gate_up_proj [E,in,out]`) —
-invisible to both this loop and `find_layers()`; they'd be stored BF16 while
-`config.json` claims `W4A16_NVFP4`. Additionally, with no/insufficient results JSON,
-Stage 7 "packs all nn.Linear except lm_head" — the exact fail-open the handoff forbids.
-Expert-quantized detection also reads `layer_losses.get("experts.gate_up") != "BF16"`,
-a per-layer blanket that ignores per-expert RTN/BF16/quantized mixtures.
-**Fix:** Expert-aware packing against the pinned vLLM contract; hard-error without a
-complete manifest; per-slice dispositions.
+### 🟡 P0.7 — GPT-OSS experts not yet packed for vLLM (fail-open half FIXED)
+**Remaining:** batched expert slices (`experts.gate_up_proj [E,in,out]`) are captured,
+verified, and manifested per slice (P0.5/P0.6 done), but the vLLM expert packing
+layout is not implemented yet. Stage 7 now **refuses** to run when expert slices are
+present unless `--allow_hybrid` is passed, in which case the output is loudly labeled
+HYBRID (experts BF16, on the ignore list, BF16 byte-fraction reported) — the silent
+"full NVFP4 with BF16 experts" failure and the "pack all nn.Linear" fallback are gone.
+**Next:** read the pinned vLLM 0.25.1 GPT-OSS + ModelOpt loader source, document the
+expert tensor contract in `docs/VLLM_NVFP4_CONTRACT.md`, implement expert packing,
+prove with a small fixture load (P0.8).
 
 ### 🔴 P0.8 — NVFP4 packing contract unverified against pinned vLLM
 **Evidence:** `weight_scale_2 = 1.0` hard-coded with an in-comment claim about Marlin
@@ -88,6 +68,32 @@ no server, no concurrency, no async, no percentiles, no per-request records.
 ---
 
 ## Resolved
+
+### 🟢 P0.5 — Stage 5 tensor manifest (resolved 2026-07-16)
+Was: Stage 5 JSON had only settings + total loss; Stage 7 expected fields that never
+existed and fell open to "pack all nn.Linear".
+**Fix:** Stage 5 (nvfp4 + parallel mode) now emits `quant_artifacts/manifest.json`
+with one record per tensor/expert-slice — name, kind, layer, projection, expert
+index, shape, orientation, dtype, disposition (GPTQ_NVFP4 / RTN_NVFP4 /
+BF16_FALLBACK), reason, block sizes, loss + normalized loss, Hessian sample count,
+artifact reference — plus an excluded-parameters list so records ∪ excluded ==
+all named parameters exactly. `read_quant_manifest` hard-errors on any missing
+field. **Proof:** `test_manifest_e2e.py` 5/5 (record completeness, coverage,
+round-trip, fail-closed validation, BF16-fallback semantics).
+
+### 🟢 P0.6 — Exact codes/scales preserved through export (resolved 2026-07-16)
+Was: Stage 7 re-derived NVFP4 scales/codes from weights — and worse, from the RAW
+on-disk (potentially init-transformed) weights, not the QDQ tensors GPTQ produced.
+**Fix:** `NVFP4Quantizer` capture mode records the exact E2M1 codes + FP8 scales as
+`fasterquant_blockwise`/RTN produce them (`begin/end/abort_capture`);
+`quant_artifacts.py` stores them per layer (safetensors shards, atomic) and enforces
+the invariant `dequantize(codes, scales) == QDQ weight` **bit-exact** — verified
+immediately after each tensor quantizes AND again at Stage 7 pack time against the
+on-disk checkpoint. Stage 7 never re-quantizes; it serializes the stored artifacts
+(legacy fp8/int8 re-derivation packers removed). **Proof:** `test_exact_artifacts.py`
+11/11 (round trips incl. partial GPTQ blocks, RTN, bf16 cast; tamper detection;
+non-QDQ-basis repack drift demo), `test_stage7_exact.py` 5/5 (exact consumption,
+fail-closed, tampered-artifact abort, dense full pack).
 
 ### 🟢 P0.1 — Hard-coded DGX paths (resolved 2026-07-16)
 Was: `_CODE_ROOT = Path("/home/runara_dgx_spark_1/...")` + RuntimeError guard in 10

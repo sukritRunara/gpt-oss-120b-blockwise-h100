@@ -127,6 +127,31 @@ collection time.
 
 ---
 
+## D-009 — Exact artifacts are captured in the quantizer, not re-derived at pack
+
+**Decision:** `NVFP4Quantizer` records the exact E2M1 codes and FP8 scales inside
+`quantize_dequantize` while GPTQ runs (`begin/end/abort_capture`); Stage 5 streams
+them to per-layer safetensors shards; Stage 7 serializes those artifacts and never
+re-quantizes. The invariant `dequantize(codes, scales) == QDQ weight` is enforced
+bit-exact twice: right after each tensor quantizes, and again at pack time against
+the on-disk checkpoint.
+
+**Why:** GPTQ's per-block scales are computed on error-compensated weights and then
+discarded — they are not recoverable from the QDQ output in general. Analysis note:
+for THIS quantizer (max-anchored `amax/6` FP8 scales) re-derivation from true QDQ
+values happens to self-consist, but the historical Stage 7 actually re-quantized the
+RAW on-disk weights (pre-init-transform basis — a genuinely different model), and the
+coincidence would break under any scale-rule change (e.g. W4A4 `weight_scale_2`).
+Capture makes the guarantee structural and testable rather than accidental.
+
+**Consequence:** Stage 7 requires the Stage 5 manifest and refuses everything else —
+including GPT-OSS expert slices until the vLLM expert layout lands (P0.7);
+`--allow_hybrid` produces only an explicitly-labeled hybrid debug checkpoint. The
+legacy fp8/int8 re-derivation exporters were removed (dead code, P0.6-violating by
+design).
+
+---
+
 <!-- Pending decisions to record as work proceeds (handoff §9):
   - Which vLLM version and NVFP4 contract were pinned.
   - Whether mixed-precision BF16 fallback is retained, and which tensors are excluded.

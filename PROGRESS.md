@@ -5,6 +5,60 @@ without pointing to the test, log, or artifact that proves it.
 
 ---
 
+## 2026-07-16 09:30 UTC — P0.5 + P0.6 resolved; official checkpoint downloaded (arm A)
+
+**Status:** complete
+
+**Goal:** (1) Download and pin the official MXFP4 checkpoint. (2) Capture GPTQ's
+exact codes/scales and emit the full per-tensor disposition manifest; make Stage 7
+serialize exactly those artifacts and fail closed.
+
+**Arm A downloaded:** `openai/gpt-oss-20b` → `/workspace/models/gpt-oss-20b-official-mxfp4`
+(38.5 GB incl. metal/ extras), revision pinned + per-file SHA-256 in `PROVENANCE.json`
+(`scripts/download_official_model.py`, resumable, HF-504-retrying;
+log `logs/setup/download_official_20260716.log`).
+
+**What was built:**
+- `quantizer.py` — NVFP4 capture mode (`begin/end/abort_capture`): records exact
+  E2M1 nibbles + FP8 scales inside `quantize_dequantize` with column-coverage
+  accounting; supports GPTQ blockwise sweeps (incl. partial final blocks) and RTN.
+- `quant_artifacts.py` (new) — artifact dataclass, nibble pack/unpack, bit-exact
+  `dequantize_artifact` + `verify_artifact_matches`, per-layer safetensors shards
+  (atomic), and the P0.5 manifest writer/reader with hard schema validation.
+- `apply.py` — Phase 2 captures every linear (verified bit-exact immediately),
+  expert handler captures every expert slice (verified against the fp32 shim before
+  the bf16 writeback); per-layer artifact streaming; full disposition records.
+- `expert_dispatch.py` — GptOss quantize() refactored (`_one_slice`), reasons +
+  artifacts per expert; `build_records()` emits manifest records per slice.
+- `stage5_quantize_model.py` — emits `quant_artifacts/` + manifest; excluded-params
+  list makes records ∪ excluded == all named parameters exactly.
+- `stage7_save_modelopt.py` — rewritten: requires the manifest (no fail-open path),
+  loads QDQ tensors directly from safetensors (never `from_pretrained` — the old
+  code packed init-transformed RAW weights), re-verifies every artifact against the
+  checkpoint, packs linears from exact codes/scales, REFUSES expert slices without
+  `--allow_hybrid` (then: loud HYBRID label + ignore list + BF16 byte fraction in
+  `PACKING_REPORT.json`). Legacy fp8/int8 re-derivation packers removed.
+
+**Evidence:**
+- `test_exact_artifacts.py` 11/11 — bit-exact round trips (GPTQ, partial blocks,
+  RTN, bf16 cast), non-QDQ-basis repack drift demo, tamper detection.
+- `test_manifest_e2e.py` 5/5 — every eligible tensor recorded, artifacts reproduce
+  in-model weights bit-exact (incl. expert slices via transpose), coverage exact,
+  fail-closed validation, BF16-fallback semantics.
+- `test_stage7_exact.py` 5/5 — no-manifest refusal, expert refusal w/o
+  --allow_hybrid, exact packed == artifact codes, tampered-artifact abort, dense
+  full pack. (`logs/tests/stage7_exact_20260716.log`)
+- Full sweep: 48 pytest tests green + stage1 5/5, stage2 7/7, stage3 gpt-oss 6/6,
+  stage3 deepseek 56/56, property1/2/4 (`logs/tests/full_pytest_20260716.log`).
+
+**Next:** P0.7/P0.8 — read pinned vLLM 0.25.1 ModelOpt NVFP4 + GPT-OSS loader
+source, write `docs/VLLM_NVFP4_CONTRACT.md`, implement expert packing, prove with a
+small fixture load in `.venv-serve`. Then the dequantization script (arm B).
+
+**Blockers:** none.
+
+---
+
 ## 2026-07-16 08:20 UTC — P0.4: memory-bounded, resumable Hessian collection
 
 **Status:** complete
