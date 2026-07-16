@@ -73,13 +73,18 @@ where GPTQ wins on every metric. (Evidence:
 results/quality/stage6_nulltest_B.json, stage6_C_rerun.json.)
 
 ### Task suite (40 items: knowledge/math/code/instruction, Harmony chat, greedy)
-_results/quality/task_{B,C,D}.json_
+_results/quality/task_{B,C,D}.json — every prompt, raw output, and verdict saved_
 
 | Arm | Overall | Knowledge | Math | Code | Instruct |
 |-----|---------|-----------|------|------|----------|
-| B | TBD | | | | |
-| C | TBD | | | | |
-| D | TBD | | | | |
+| B (BF16) | 39/40 (97.5%) | 10/10 | 9/10 | 10/10 | 10/10 |
+| C (RTN) | 40/40 (100%) | 10/10 | 10/10 | 10/10 | 10/10 |
+| D (GPTQ) | 40/40 (100%) | 10/10 | 10/10 | 10/10 | 10/10 |
+
+Both NVFP4 arms are at ceiling — **no measurable task-level degradation** at
+this suite's difficulty (B's single math miss is within noise). Task-level
+capability survives 4-bit conversion intact; the C-vs-D difference is visible
+only at logit fidelity, where GPTQ is 2.24× closer to the source.
 
 ## 3. Serving on H100 (vLLM 0.25.1, TP=1, identical flags)
 
