@@ -33,24 +33,38 @@ Full calibration: C4, 512×2048, group-size-4 collection, GPU peak 49.3 GB
 QDQ checkpoints evaluated in transformers on identical inputs. Calibration
 data (C4 train) disjoint from all evaluation data.
 
-### Perplexity (diagnostic; identical cached token sequences)
-_results/…stage4/stage6 JSONs_
+### Logit-level paired metrics (24 held-out prompts; B is reference) — PRIMARY
+_results/quality/logit_eval.json_
+
+| Metric | C (RTN) | D (GPTQ) | GPTQ advantage |
+|--------|---------|----------|----------------|
+| KL divergence (mean) | 0.02541 | **0.01133** | **2.24× lower** |
+| cosine (min over prompts) | 0.99466 | **0.99743** | 1.9× less worst-case drift |
+| next-token top-1 agreement | 1.000 | 1.000 | tie (both perfect) |
+| greedy-64 prefix agreement | 0.340 | 0.361 | +6% relative |
+
+**Blockwise GPTQ is measurably closer to the BF16 source than matched RTN on
+every divergence metric**, at identical format, mask, scales, and export path.
+(Long-greedy prefix agreement in the 0.3-0.4 range is expected for 4-bit
+weight quantization: tiny logit shifts compound over open-ended decoding while
+single-step top-1 remains perfect.)
+
+### Perplexity (diagnostic; identical cached token sequences, 2048-token windows)
+_blockwise-gptq-main/results/stage4/stage6 JSONs_
 
 | Arm | WikiText-2 | Δ vs B | C4 | Δ vs B |
 |-----|-----------|--------|----|--------|
-| B (BF16) | TBD | — | TBD | — |
-| C (RTN) | TBD | TBD | TBD | TBD |
-| D (GPTQ) | TBD | TBD | TBD | TBD |
+| B (BF16) | 227.08 | — | 711.29 | — |
+| D (GPTQ) | 248.49 | +21.41 (+9.4%) | 694.20 | −17.09 (−2.4%) |
+| C (RTN) | measurement invalid¹ | | measurement invalid¹ | |
 
-### Logit-level paired metrics (24 held-out prompts; B is reference)
-_results/quality/logit_eval.json_
-
-| Metric | C (RTN) | D (GPTQ) |
-|--------|---------|----------|
-| cosine (mean / min) | TBD | TBD |
-| KL divergence (mean) | TBD | TBD |
-| top-1 agreement | TBD | TBD |
-| greedy-64 prefix agreement | TBD | TBD |
+Notes: absolute perplexities are high because gpt-oss is a Harmony-format
+reasoning model evaluated on raw text; only deltas on identical tokens are
+meaningful. D's small C4 *improvement* is consistent with C4 being the
+calibration distribution (disjoint samples). ¹ C's stage-6 numbers
+(140/197 — far *below* B) are mathematically inconsistent with C's measured
+KL of 0.025 vs B and are being re-measured (harness null-test + rerun);
+treat the logit-level comparison above as authoritative for C-vs-D.
 
 ### Task suite (40 items: knowledge/math/code/instruction, Harmony chat, greedy)
 _results/quality/task_{B,C,D}.json_
