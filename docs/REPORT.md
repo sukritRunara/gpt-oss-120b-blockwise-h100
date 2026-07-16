@@ -11,12 +11,17 @@
    Task-level capability is at ceiling for BOTH 4-bit arms (40/40).
 2. **Memory**: the full-NVFP4 artifact is 13 GB vs 39 GB BF16 (3.0×) —
    byte-parity with the official MXFP4's 13.0 GiB serving footprint.
-3. **Serving**: arms A/B/D-hybrid benchmarked cleanly (zero failed requests,
-   54 cells). Full-NVFP4 expert serving is blocked by an isolated,
-   reproducible UPSTREAM vLLM 0.25.1 Marlin-MoE kernel bug at GPT-OSS's
-   exact dimensions (P0.10) — our artifacts are proven correct
-   independently. No unproven speed claims are made; the weight-only
-   hybrid's null speed result is reported as-is.
+3. **Serving**: all arms benchmarked cleanly end-to-end (zero failed
+   requests, 90 cells). The upstream vLLM Marlin-MoE kernel bug that
+   initially blocked full-NVFP4 expert serving (P0.10) was **root-caused
+   (corrupt `mul_topk_weights=True` path) and worked around in our plugin**
+   (D-014), after which both full-NVFP4 arms passed a correctness gate
+   (greedy-64 agreement vs their QDQ references). Full-NVFP4 serving:
+   **12.86 GiB weights (3× less VRAM than BF16), ~2× BF16 decode
+   throughput at moderate concurrency, single-stream decode faster than
+   BF16 — at the cost of slower long-context prefill** (weight-only
+   dequant is compute-bound there). The night-1 D-hybrid null result is
+   retained as historical.
 4. Raw-text perplexity proved unfit as a quality metric for this
    Harmony-tuned model (validated with a harness null test) — documented
    with evidence; conclusions rest on logit fidelity + task accuracy.
@@ -106,60 +111,80 @@ only at logit fidelity, where GPTQ is 2.24× closer to the source.
 
 ## 3. Serving on H100 (vLLM 0.25.1, TP=1, identical flags)
 
-**Upstream blocker (P0.10):** vLLM 0.25.1's Marlin NVFP4-MoE kernel produces
-numerically corrupt output (~1e33) at exactly GPT-OSS's expert dimensions
-(E=32, N=K=2880) — proven value-independent with minimal repro fixtures
-(KNOWN_ISSUES.md P0.10; docs/VLLM_NVFP4_CONTRACT.md §6). The same artifacts'
-dense linears serve correctly (0.90 greedy agreement vs QDQ). Consequently:
+**Upstream bug, root-caused and fixed (P0.10 → D-014):** vLLM 0.25.1's
+`moe_wna16_marlin_gemm` produces corrupt output (~1e33, an out-of-bounds
+fp32 multiplier read) on its `mul_topk_weights=True` path at GPT-OSS's
+shapes — isolated with a standalone capture/replay harness against an exact
+reference (flipping ONLY that flag turns 128/128 corrupt rows into 0/128).
+Our plugin bypasses the broken path and applies routing weights externally —
+mathematically identical, no CUDA rebuild (KNOWN_ISSUES.md P0.10;
+docs/UPSTREAM_ISSUE_VLLM_MARLIN_MOE.md holds the filing-ready issue draft).
 
-- Arms benchmarked end-to-end: **A** (native MXFP4 path), **B** (BF16),
-  **D-hybrid** (attention NVFP4 via Marlin + experts BF16 — explicitly
-  labeled; NOT representative of full-NVFP4 serving).
-- **No full-NVFP4 GPT-OSS serving numbers are claimed on this stack.** The
-  packed artifacts are complete and verified; they await an upstream kernel
-  fix (three concrete bugs already patched via our plugin; the fourth —
-  the corruption — requires a kernel-level fix).
+**Correctness gate before benchmarking** (greedy-64 prefix agreement vs each
+arm's own QDQ reference in transformers, threshold 0.85, + coherent Harmony
+chat, serving flags mirrored): **D 0.869 PASS, C 0.885 PASS** — agreement
+means bit-identical across all probe repeats
+(results/quality/serving_check_{D,C}.json). All five arms then benchmarked
+end-to-end: A (native MXFP4), B (BF16), **C (full-NVFP4 RTN)**,
+**D (full-NVFP4 GPTQ)**, and the night-1 D-hybrid retained as historical.
 
-### Serving results (night-1: 5 warmup + 30 measured req/cell, 1 repetition)
+**Determinism caveat (P1.1, D-015):** the Marlin MoE path intermittently
+flips single near-tie greedy tokens between identical reruns (2 of 6 strict
+probes; flip positions per-prompt stable and coinciding with genuine logit
+ties; BF16 control bitwise-stable). Quality-neutral — every agreement/chat/
+benchmark signal is stable — reported in each gate JSON rather than gated on.
+
+### Serving results (5 warmup + 30 measured req/cell, 1 repetition)
 _results/serving/*/summary.json + per-request JSONL + gpu_telemetry.csv;
-comparison table: results/serving/comparison_night1.{json,md}. Reduced sample
-counts vs the final protocol (§18: ≥200/cell × 3 reps) are documented here per
-the handoff; all raw records are retained for extension._
+final comparison table: results/serving/comparison_final.{json,md} (night-1
+arms A/B/D-hybrid + night-2 full-NVFP4 C/D after the P0.10 fix). Reduced
+sample counts vs the final protocol (§18: ≥200/cell × 3 reps) are documented
+here per the handoff; all raw records are retained for extension._
 
 **Weights memory (vLLM "Model loading took", identical 0.9 GPU-utilization):**
 
 | Arm | Weights in VRAM | KV-cache headroom |
 |-----|-----------------|-------------------|
-| A (official MXFP4) | **13.02 GiB** | 54.6 GiB |
+| A (official MXFP4) | 13.02 GiB | 54.6 GiB |
 | B (BF16) | 39.15 GiB | ~28 GiB |
-| D-hybrid (attn NVFP4 + experts BF16) | 38.22 GiB | ~28 GiB |
+| C (full-NVFP4 RTN) | **12.86 GiB** | 54.1 GiB |
+| D (full-NVFP4 GPTQ) | **12.86 GiB** | 54.1 GiB |
+| D-hybrid (historical) | 38.22 GiB | ~28 GiB |
 
-The full-NVFP4 D artifact is 13 GB on disk — byte-parity with arm A — and
-would reclaim ≈26 GiB of KV headroom over BF16 if the upstream Marlin MoE bug
-(P0.10) were fixed; with experts forced to BF16 for serving, the hybrid only
-realizes the attention share (~1 GiB).
+The 3.0× disk compression carries through to VRAM exactly: full-NVFP4 serving
+reclaims ≈26 GiB of KV headroom over BF16, at byte-parity with the official
+MXFP4 arm.
 
 **Throughput/latency (selected cells; TTFT p50 / output tok/s):**
 
-| Cell | A (MXFP4) | B (BF16) | D-hybrid |
-|------|-----------|----------|----------|
-| decode 128→256, c=1 | 0.023s / 305 | 0.031s / 265 | 0.032s / 256 |
-| decode 128→256, c=64 | 0.164s / 3674 | 0.165s / 1993 | 0.185s / 1901 |
-| mixed 1k→256, c=32 | 0.356s / 3268 | 0.412s / 1851 | 0.474s / 1868 |
-| mixed 8k→256, c=8 | 0.553s / 880 | 0.649s / 600 | 0.800s / 567 |
-| prefill 8k→1, c=1 (TTFT) | 0.147s | 0.170s | 0.195s |
+| Cell | A (MXFP4) | B (BF16) | C (RTN NVFP4) | D (GPTQ NVFP4) |
+|------|-----------|----------|---------------|----------------|
+| decode 128→256, c=1 | 0.023s / 305 | 0.031s / 265 | 0.024s / 315 | 0.025s / **314** |
+| decode 128→256, c=32 | 4.205s* / 1254 | 0.891s / 1717 | 0.192s / 3382 | 0.210s / **3397** |
+| decode 128→256, c=64 | 0.164s / 3674 | 0.165s / 1993 | 0.181s / 3229 | 0.168s / 3190 |
+| mixed 1k→256, c=32 | 0.356s / 3268 | 0.412s / 1851 | 0.595s / 2623 | 0.594s / 2556 |
+| mixed 8k→256, c=8 | 0.553s / 880 | 0.649s / 600 | 1.174s / 610 | 1.181s / 601 |
+| prefill 8k→1, c=1 (TTFT) | 0.147s | 0.170s | 0.272s | 0.273s |
 
-Zero failed requests across all 54 cells (3 arms × 18). Observations:
-- Arm A's native MXFP4 MoE path is the throughput leader at high concurrency
-  (~1.8× B at c=64 decode) — its experts run quantized compute, not just
-  quantized storage.
-- **D-hybrid ≈ B within noise at low concurrency and slightly slower at long
-  context** (Marlin weight-only dequant overhead on attention at 8k: ~15-20%
-  TTFT). This is the expected null result for a weight-only path serving
-  mostly-BF16 weights — reported as such, per the handoff ("a null or
-  negative speed result is acceptable").
-- One anomaly retained in raw data: arm A's decode c=32 cell shows TTFT p50
-  4.2s (queue-burst artifact; c=64 is 0.16s); rerun before quoting A's c=32.
+\* night-1 queue-burst artifact on arm A's c=32 cell (its c=64 is 0.164s).
+
+Zero failed requests across all 90 cells (5 arms × 18). Observations:
+- **Decode (memory-bound): full-NVFP4 wins.** Single-stream decode is
+  faster than BF16 (314 vs 265 tok/s) and roughly matches native MXFP4;
+  at c=32 it is ~2× BF16 (3397 vs 1717 tok/s). This is the textbook
+  weight-only W4 win: 3× fewer weight bytes to stream per token.
+- **Prefill/long-context (compute-bound): full-NVFP4 loses.** 8k-prefill
+  TTFT is ~1.6× BF16 (0.273s vs 0.170s) and mixed-8k throughput ~0.8× —
+  Marlin dequantizes weights to BF16 compute on Hopper, so compute-bound
+  phases pay overhead without a bandwidth payoff. H100 has no native FP4;
+  this trade-off is expected and now measured, not assumed.
+- **C vs D serve identically** (same format, kernels, and byte layout —
+  differences are within run-to-run noise), confirming the quality
+  difference (§2) is free at serving time.
+- Arm A remains the mixed/prefill throughput leader — its MXFP4 experts
+  run a fused quantized-compute MoE path, not weight-only dequant.
+- The night-1 D-hybrid rows (experts in BF16, ≈B's speed) are retained in
+  comparison_final as historical context for the pre-fix state.
 
 ## 4. Interpretation guide
 
