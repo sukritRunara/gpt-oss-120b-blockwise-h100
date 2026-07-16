@@ -14,10 +14,15 @@ Stage 7 serialization, and the invariant tests:
                             (bit-exact after the same dtype cast)
 
 Storage convention (matches the vLLM ModelOpt W4A16 checkpoint layout):
-  codes  : uint8 [out, in//2] — two E2M1 nibbles per byte,
-           low nibble = even column, high nibble = odd column,
-           nibble = grid_index (0-7) | sign_bit << 3
-  scales : float8_e4m3fn [out, in//block_size] — per-microblock scale
+  codes        : uint8 [out, in//2] — two E2M1 nibbles per byte,
+                 low nibble = even column, high nibble = odd column,
+                 nibble = grid_index (0-7) | sign_bit << 3
+  scales       : float8_e4m3fn [out, in//block_size] — per-microblock scale,
+                 normalized by global_scale (D-010 / ModelOpt convention)
+  global_scale : float32 [1] — per-tensor scale amax/(6·448); 1.0 when the
+                 quantizer ran without a global scale (legacy)
+
+  dequant = E2M1(code) × fp8(scale) × global_scale
 """
 
 from dataclasses import dataclass, field
@@ -34,16 +39,24 @@ class QuantizedTensorArtifact:
 
     Attributes:
         codes:  uint8 [out, in//2], packed E2M1 nibble pairs (see module doc).
-        scales: float8_e4m3fn [out, in//block_size] microblock scales.
+        scales: float8_e4m3fn [out, in//block_size] microblock scales
+                (normalized by global_scale).
         block_size: microscaling block width (16 for NVFP4).
         shape: logical (out, in) of the quantized matrix BEFORE packing.
+        global_scale: float32 [1] per-tensor scale (vLLM weight_scale_2);
+                default 1.0 for artifacts produced without a global scale.
         metadata: free-form (orientation, source module, expert index, …).
     """
     codes: torch.Tensor
     scales: torch.Tensor
     block_size: int
     shape: tuple
+    global_scale: torch.Tensor = None
     metadata: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        if self.global_scale is None:
+            self.global_scale = torch.ones(1, dtype=torch.float32)
 
 
 def pack_nibbles(nibbles: torch.Tensor) -> torch.Tensor:
@@ -79,7 +92,10 @@ def dequantize_artifact(art: QuantizedTensorArtifact) -> torch.Tensor:
     """
     out_f, in_f = art.shape
     values = nibbles_to_values(unpack_nibbles(art.codes))          # [out, in]
-    scales = art.scales.to(torch.float32)                          # [out, in/bs]
+    # Effective per-block scale = fp8 stored scale × per-tensor global scale
+    # (must match NVFP4Quantizer.find_params exactly for bit-exactness).
+    scales = (art.scales.to(torch.float32)
+              * art.global_scale.to(torch.float32).item())         # [out, in/bs]
     expanded = scales.repeat_interleave(art.block_size, dim=1)[:, :in_f]
     return values[:, :in_f] * expanded
 
@@ -132,6 +148,8 @@ def save_layer_artifacts(artifact_dir, layer_idx: int, artifacts: dict) -> str:
         keys = artifact_keys(name, e_idx)
         flat[keys["codes"]] = art.codes.contiguous()
         flat[keys["scales"]] = art.scales.contiguous()
+        flat[keys["codes"].replace(".codes", ".global_scale")] = \
+            art.global_scale.contiguous()
 
     tmp = artifact_dir / (fname + ".tmp")
     save_file(flat, str(tmp))
@@ -146,13 +164,17 @@ def load_artifact(artifact_dir, file: str, name: str, expert_index,
     from safetensors import safe_open
 
     keys = artifact_keys(name, expert_index)
+    gs_key = keys["codes"].replace(".codes", ".global_scale")
     with safe_open(str(Path(artifact_dir) / file), framework="pt",
                    device="cpu") as f:
         codes = f.get_tensor(keys["codes"])
         scales = f.get_tensor(keys["scales"])
+        global_scale = (f.get_tensor(gs_key) if gs_key in f.keys()
+                        else torch.ones(1, dtype=torch.float32))
     return QuantizedTensorArtifact(
         codes=codes, scales=scales,
         block_size=block_size, shape=tuple(shape),
+        global_scale=global_scale,
     )
 
 

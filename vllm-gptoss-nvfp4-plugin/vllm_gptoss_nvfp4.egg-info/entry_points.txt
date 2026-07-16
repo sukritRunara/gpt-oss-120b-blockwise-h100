@@ -1,0 +1,2 @@
+[vllm.general_plugins]
+gptoss_nvfp4 = vllm_gptoss_nvfp4:register

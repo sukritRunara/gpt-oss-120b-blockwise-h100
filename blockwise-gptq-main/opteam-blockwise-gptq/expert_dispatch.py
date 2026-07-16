@@ -387,6 +387,8 @@ class GptOssHandler(MoEHandler):
             if h.nsamples == 0 or h.H is None:
                 # RTN fallback for never-activated experts — explicit, recorded.
                 q = _exp_quant(quant_format, device, nvfp4_block_size)
+                if hasattr(q, "set_global_scale_from"):        # D-010, nvfp4
+                    q.set_global_scale_from(batched)
                 if capture_artifacts:
                     q.begin_capture(out_f, in_f)
                 _rtn_inplace(batched, q)
@@ -406,6 +408,8 @@ class GptOssHandler(MoEHandler):
             shim = shim.to(device)
             g = GPTQ(shim)
             g.quantizer = _exp_quant(quant_format, device, nvfp4_block_size)
+            if hasattr(g.quantizer, "set_global_scale_from"):   # D-010, nvfp4
+                g.quantizer.set_global_scale_from(shim.weight)
             g.H        = h.H.to(device)
             g.nsamples = h.nsamples
             if capture_artifacts:

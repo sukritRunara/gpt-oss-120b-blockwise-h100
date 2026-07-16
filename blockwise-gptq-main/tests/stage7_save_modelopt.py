@@ -9,23 +9,37 @@ Fail-closed contract (P0.5):
   - A complete manifest (quant_artifacts/manifest.json) is REQUIRED. There is
     no "pack all nn.Linear" fallback.
   - Every packed tensor is verified against the on-disk QDQ weight:
-        dequantize(codes, scales) == QDQ weight   (bit-exact)
+        dequantize(codes, scales, global_scale) == QDQ weight   (bit-exact)
     A mismatch aborts the run (P0.6 invariant).
-  - GPT-OSS batched expert slices cannot yet be packed for vLLM (P0.7). If
-    the manifest contains expert slices, Stage 7 refuses to run unless
-    --allow_hybrid is passed, in which case experts stay BF16, are added to
-    the quantization ignore list, and the output is loudly marked HYBRID.
+  - GPT-OSS expert slices pack per layer as one unit (vLLM FusedMoE
+    quantizes a layer's experts together). A layer with any non-NVFP4
+    expert slice refuses to pack unless --allow_hybrid is passed, in which
+    case that layer's experts stay BF16, go on the ignore list, and the
+    output is loudly marked HYBRID.
 
 Exact consumption (P0.6):
   - Codes and scales are read from the Stage 5 artifact shards, never
     re-derived from weights. The packed model IS the model GPTQ optimized
     (and the model Stage 6 evaluated, modulo the BF16 QDQ cast).
 
-Output per packed linear (ModelOpt W4A16_NVFP4 layout; the exact contract
-against the pinned vLLM is verified in P0.8 / docs/VLLM_NVFP4_CONTRACT.md):
+Checkpoint layout (verified against pinned vLLM 0.25.1 —
+docs/VLLM_NVFP4_CONTRACT.md):
+  per packed linear (HF names; q/k/v fused by vLLM at load):
     {name}.weight          uint8        [out, in//2]   packed E2M1 nibble pairs
     {name}.weight_scale    float8_e4m3  [out, in//16]  per-block scales
-    {name}.weight_scale_2  bfloat16     [1]            1.0 (W4A16)
+                                                        (normalized by scale_2)
+    {name}.weight_scale_2  float32      [1]            amax/(6·448), shared
+                                                        across fused q/k/v
+  per MoE layer (vLLM-native names, HF orientation — loader permutes):
+    ...experts.w13_weight          uint8  [E, H/2, 2I]  (interleaved gate/up)
+    ...experts.w13_weight_scale    fp8    [E, H/16, 2I]
+    ...experts.w13_weight_scale_2  fp32   [E, 2]
+    ...experts.w13_input_scale     fp32   [E, 2]        (1.0; dropped by W4A16)
+    ...experts.w2_weight           uint8  [E, I/2, H]
+    ...experts.w2_weight_scale     fp8    [E, I/16, H]
+    ...experts.w2_weight_scale_2   fp32   [E]
+    ...experts.w2_input_scale      fp32   [E]           (1.0; dropped)
+  biases keep HF names (gate_up_proj_bias/down_proj_bias → mapper → w13/w2_bias).
 
 Formats other than nvfp4 are not supported by this exporter (the legacy
 fp8/int8 re-derivation paths were removed — they violated P0.6 by design).
@@ -94,9 +108,19 @@ def load_qdq_state_dict(model_path: Path) -> dict:
 # Core: pack from manifest
 # ══════════════════════════════════════════════════════════════════════════════
 
+def _vllm_ignore_name(hf_name: str) -> str:
+    """Translate an HF module path to the vLLM prefix used for exclusions."""
+    return hf_name.replace(".self_attn.", ".attn.")
+
+
 def pack_from_manifest(model_path: Path, output_dir: Path,
                        manifest_path: Path, allow_hybrid: bool = False) -> dict:
     """Build and save the packed checkpoint. Returns the packing report.
+
+    Linears pack to the ModelOpt W4A16 layout; GPT-OSS batched experts pack
+    to the vLLM FusedMoE checkpoint layout (docs/VLLM_NVFP4_CONTRACT.md §4):
+    HF orientation, per-expert transposed codes/scales, per-expert
+    weight_scale_2 and 1.0 input_scale placeholders.
 
     Raises on ANY deviation from the manifest contract (fail closed).
     """
@@ -108,88 +132,157 @@ def pack_from_manifest(model_path: Path, output_dir: Path,
     artifact_dir = Path(manifest_path).parent
     records = manifest["tensors"]
 
-    expert_records = [r for r in records if r["kind"] == "expert_slice"]
-    if expert_records and not allow_hybrid:
-        raise RuntimeError(
-            f"Manifest contains {len(expert_records)} GPT-OSS expert slices, "
-            f"and vLLM expert packing is not implemented yet (P0.7). "
-            f"Refusing to emit a checkpoint that silently leaves the dominant "
-            f"expert weights in BF16. Pass --allow_hybrid to produce an "
-            f"explicitly-labeled HYBRID checkpoint (experts BF16, attention "
-            f"NVFP4) for debugging."
-        )
-
     state_dict = load_qdq_state_dict(model_path)
 
     bytes_by = {"NVFP4_PACKED": 0, "BF16_KEPT": 0}
-    counts = {"packed": 0, "expert_bf16": 0, "fallback_bf16": 0, "verified": 0}
+    counts = {"packed": 0, "experts_packed": 0, "expert_bf16": 0,
+              "fallback_bf16": 0, "verified": 0}
     ignore_names = ["lm_head"]
+    fallback_linears = []
 
-    for r in records:
-        disposition = r["disposition"]
+    def _load_verified(r):
+        """Load a record's artifact and enforce the P0.6 invariant against
+        the on-disk QDQ tensor. Returns the artifact."""
         name, e_idx = r["name"], r["expert_index"]
         param_key = r["param"] if r["kind"] == "expert_slice" \
-            else f"{r['name']}.weight"
+            else f"{name}.weight"
         if param_key not in state_dict:
             raise RuntimeError(
                 f"Manifest names '{param_key}' but it is missing from the "
                 f"checkpoint — manifest/checkpoint mismatch (fail closed)."
             )
         qdq = state_dict[param_key]
+        art = load_artifact(artifact_dir, r["artifact"]["file"], name, e_idx,
+                            r["scale_block_size"], r["orig_shape"])
+        target = qdq[e_idx].T if r["kind"] == "expert_slice" else qdq
+        rec_w = dequantize_artifact(art).to(target.dtype)
+        if not torch.equal(rec_w, target):
+            diff = (rec_w.float() - target.float()).abs()
+            raise RuntimeError(
+                f"P0.6 invariant violated for {name}"
+                f"{f' expert {e_idx}' if e_idx is not None else ''}: "
+                f"dequantize(artifact) != QDQ checkpoint tensor "
+                f"(max diff {diff.max().item():.3e}). Refusing to pack."
+            )
+        counts["verified"] += 1
+        return art
 
-        if disposition in ("GPTQ_NVFP4", "RTN_NVFP4"):
-            art_ref = r["artifact"]
-            art = load_artifact(artifact_dir, art_ref["file"], name, e_idx,
-                                r["scale_block_size"], r["orig_shape"])
-            # P0.6 invariant against the on-disk QDQ tensor
-            target = qdq[e_idx].T if r["kind"] == "expert_slice" else qdq
-            rec_w = dequantize_artifact(art).to(target.dtype)
-            if not torch.equal(rec_w, target):
-                diff = (rec_w.float() - target.float()).abs()
-                raise RuntimeError(
-                    f"P0.6 invariant violated for {name}"
-                    f"{f' expert {e_idx}' if e_idx is not None else ''}: "
-                    f"dequantize(artifact) != QDQ checkpoint tensor "
-                    f"(max diff {diff.max().item():.3e}). Refusing to pack."
-                )
-            counts["verified"] += 1
-
-            if r["kind"] == "linear":
-                del state_dict[param_key]
-                state_dict[f"{name}.weight"] = art.codes
-                state_dict[f"{name}.weight_scale"] = art.scales
-                state_dict[f"{name}.weight_scale_2"] = \
-                    torch.ones(1, dtype=torch.bfloat16)
-                counts["packed"] += 1
-                bytes_by["NVFP4_PACKED"] += (art.codes.numel()
-                                             + art.scales.numel())
-            else:
-                # Verified but not packable until P0.7 — stays BF16 (hybrid).
-                counts["expert_bf16"] += 1
-
-        elif disposition == "BF16_FALLBACK":
-            if r["kind"] == "linear":
-                ignore_names.append(name)
-                counts["fallback_bf16"] += 1
-            else:
-                counts["expert_bf16"] += 1
-
+    # ── Dense linears ─────────────────────────────────────────────────────────
+    for r in (r for r in records if r["kind"] == "linear"):
+        name = r["name"]
+        if r["disposition"] in ("GPTQ_NVFP4", "RTN_NVFP4"):
+            art = _load_verified(r)
+            del state_dict[f"{name}.weight"]
+            state_dict[f"{name}.weight"] = art.codes
+            state_dict[f"{name}.weight_scale"] = art.scales
+            # ModelOpt global scale (fp32, amax/2688 by D-010) — what vLLM's
+            # Marlin W4A16 kernel consumes as weight_scale_2.
+            state_dict[f"{name}.weight_scale_2"] = \
+                art.global_scale.to(torch.float32)
+            counts["packed"] += 1
+            bytes_by["NVFP4_PACKED"] += art.codes.numel() + art.scales.numel()
+        elif r["disposition"] == "BF16_FALLBACK":
+            fallback_linears.append(name)
+            counts["fallback_bf16"] += 1
         else:
             raise RuntimeError(
-                f"Record {name}: unhandled disposition {disposition!r} "
-                f"(fail closed)."
-            )
+                f"Record {name}: unhandled disposition "
+                f"{r['disposition']!r} (fail closed).")
 
-    # Expert params (hybrid mode) go on the ignore list; count BF16 bytes.
-    for pname in sorted({r["param"] for r in expert_records}):
-        module = pname.rsplit(".", 1)[0] if pname.endswith(".weight") else pname
-        if module not in ignore_names:
-            ignore_names.append(module)
+    # Fallback linears must be excludable under vLLM's FUSED module names:
+    # q/k/v fuse into attn.qkv_proj, so a partial q/k/v fallback cannot load.
+    for name in fallback_linears:
+        leaf = name.rsplit(".", 1)[-1]
+        if leaf in ("q_proj", "k_proj", "v_proj"):
+            prefix = name.rsplit(".", 1)[0]
+            trio = {f"{prefix}.{p}" for p in ("q_proj", "k_proj", "v_proj")}
+            if not trio.issubset(set(fallback_linears)):
+                raise RuntimeError(
+                    f"{name} fell back to BF16 but its q/k/v siblings did "
+                    f"not. vLLM fuses q/k/v into one qkv_proj — a partially "
+                    f"quantized trio cannot load. Re-run Stage 5 with a "
+                    f"threshold that treats q/k/v uniformly."
+                )
+            ignore_names.append(_vllm_ignore_name(f"{prefix}.qkv_proj"))
+        else:
+            ignore_names.append(_vllm_ignore_name(name))
+
+    # ── GPT-OSS batched experts → FusedMoE layout ─────────────────────────────
+    expert_records = [r for r in records if r["kind"] == "expert_slice"]
+    by_layer = {}
+    for r in expert_records:
+        by_layer.setdefault(r["layer_index"], []).append(r)
+
+    for layer_idx, recs in sorted(by_layer.items()):
+        packable = all(r["disposition"] in ("GPTQ_NVFP4", "RTN_NVFP4")
+                       for r in recs)
+        experts_prefix = recs[0]["param"].rsplit(".", 1)[0]  # ...mlp.experts
+
+        if not packable:
+            bad = [f"expert {r['expert_index']} {r['projection']} "
+                   f"({r['disposition']}: {r['reason']})"
+                   for r in recs
+                   if r["disposition"] not in ("GPTQ_NVFP4", "RTN_NVFP4")]
+            if not allow_hybrid:
+                raise RuntimeError(
+                    f"Layer {layer_idx}: {len(bad)} expert slice(s) are not "
+                    f"NVFP4 ({'; '.join(bad[:4])}{'…' if len(bad) > 4 else ''}). "
+                    f"vLLM's FusedMoE quantizes a layer's experts as one unit "
+                    f"— pass --allow_hybrid to keep this layer's experts BF16 "
+                    f"(explicitly labeled), or re-run Stage 5 without the "
+                    f"fallback."
+                )
+            ignore_names.append(_vllm_ignore_name(experts_prefix))
+            counts["expert_bf16"] += len(recs)
+            print(f"[Stage 7] HYBRID: layer {layer_idx} experts stay BF16 "
+                  f"({len(bad)} non-NVFP4 slice(s))")
+            continue
+
+        sides = {"gate_up": {}, "down": {}}
+        for r in recs:
+            sides[r["projection"]][r["expert_index"]] = r
+        n_exp = len(sides["gate_up"])
+        if set(sides["gate_up"]) != set(range(n_exp)) \
+                or set(sides["down"]) != set(range(n_exp)):
+            raise RuntimeError(
+                f"Layer {layer_idx}: expert manifest is not contiguous "
+                f"0..{n_exp - 1} for both projections (fail closed).")
+
+        for proj, w_key, hf_param in (
+            ("gate_up", "w13", f"{experts_prefix}.gate_up_proj"),
+            ("down",    "w2",  f"{experts_prefix}.down_proj"),
+        ):
+            arts = [_load_verified(sides[proj][e]) for e in range(n_exp)]
+            # Checkpoint stores HF orientation (input dim first); vLLM's
+            # loader permutes back — see contract §4. Transposing the packed
+            # byte matrix is exact: bytes hold input-dim pairs either way.
+            codes = torch.stack([a.codes.T.contiguous() for a in arts])
+            scales = torch.stack([a.scales.T.contiguous() for a in arts])
+            gscale = torch.stack([a.global_scale.reshape(()).to(torch.float32)
+                                  for a in arts])                      # [E]
+
+            del state_dict[hf_param]
+            state_dict[f"{experts_prefix}.{w_key}_weight"] = codes
+            state_dict[f"{experts_prefix}.{w_key}_weight_scale"] = scales
+            if w_key == "w13":
+                # [E, 2]: same global for the fused gate/up shards (one
+                # tensor on our side) — passes vLLM's allclose check.
+                state_dict[f"{experts_prefix}.w13_weight_scale_2"] = \
+                    torch.stack([gscale, gscale], dim=1)
+                state_dict[f"{experts_prefix}.w13_input_scale"] = \
+                    torch.ones(n_exp, 2, dtype=torch.float32)
+            else:
+                state_dict[f"{experts_prefix}.w2_weight_scale_2"] = gscale
+                state_dict[f"{experts_prefix}.w2_input_scale"] = \
+                    torch.ones(n_exp, dtype=torch.float32)
+            counts["experts_packed"] += n_exp
+            bytes_by["NVFP4_PACKED"] += codes.numel() + scales.numel()
+
     for key, t in state_dict.items():
         if t.dtype in (torch.bfloat16, torch.float16, torch.float32):
             bytes_by["BF16_KEPT"] += t.numel() * t.element_size()
 
-    hybrid = bool(expert_records)
+    hybrid = counts["expert_bf16"] > 0
     total_bytes = bytes_by["NVFP4_PACKED"] + bytes_by["BF16_KEPT"]
     report = {
         "hybrid": hybrid,
@@ -215,10 +308,11 @@ def pack_from_manifest(model_path: Path, output_dir: Path,
         print(f"[Stage 7] HYBRID checkpoint: {counts['expert_bf16']} expert "
               f"slices remain BF16 ({report['bf16_fraction']:.1%} of model "
               f"bytes are BF16). This is NOT a full NVFP4 model — do not "
-              f"benchmark it as one. (vLLM expert packing lands with P0.7.)")
+              f"benchmark it as one.")
         print("!" * 72)
-    print(f"[Stage 7] packed={counts['packed']} verified={counts['verified']} "
-          f"fallback_bf16={counts['fallback_bf16']} "
+    print(f"[Stage 7] linears packed={counts['packed']}, expert slices "
+          f"packed={counts['experts_packed']}, verified={counts['verified']}, "
+          f"fallback_bf16={counts['fallback_bf16']}, "
           f"expert_bf16={counts['expert_bf16']}")
     return report
 
@@ -277,22 +371,19 @@ def _copy_support_files(model_path: Path, output_dir: Path):
 
 def _write_quant_config(model_path: Path, output_dir: Path,
                         ignore_names: list, block_size: int):
+    """vLLM reads quant_algo/group_size/ignore FLAT from quantization_config
+    (compressed-tensors style branch, modelopt.py:281-368 — see
+    docs/VLLM_NVFP4_CONTRACT.md §1). Ignore names use vLLM module prefixes."""
     config = json.loads((model_path / "config.json").read_text())
     config["quantization_config"] = {
         "quant_method": "modelopt",
         "quant_algo": "W4A16_NVFP4",
-        "config_groups": {
-            "group_0": {
-                "weights": {"num_bits": 4, "type": "float",
-                            "group_size": block_size},
-                "targets": ["Linear"],
-            }
-        },
+        "group_size": block_size,
         "ignore": ignore_names,
     }
     (output_dir / "config.json").write_text(json.dumps(config, indent=2))
     print(f"[Stage 7] config.json written (quant_algo=W4A16_NVFP4, "
-          f"{len(ignore_names)} ignored)")
+          f"group_size={block_size}, {len(ignore_names)} ignored)")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

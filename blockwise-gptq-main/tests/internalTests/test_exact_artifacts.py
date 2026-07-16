@@ -144,6 +144,31 @@ def test_equivalence_check_has_teeth():
     assert not torch.equal(dequantize_artifact(tampered), W_qdq)
 
 
+def test_global_scale_roundtrip_bitexact():
+    """D-010: with the ModelOpt per-tensor global scale set, the round trip
+    must stay bit-exact and the artifact must carry the global scale."""
+    torch.manual_seed(9)
+    layer = nn.Linear(128, 32, bias=False)
+    W0 = torch.randn(32, 128) * 0.02          # small weights → fp8-subnormal
+    layer.weight.data.copy_(W0)               # territory without normalization
+
+    g = GPTQ(layer)
+    g.quantizer = NVFP4Quantizer(block_size=16, device="cpu")
+    g.quantizer.set_global_scale_from(layer.weight.data)
+    s2 = g.quantizer.global_scale
+    assert s2 is not None and abs(s2 - W0.abs().amax().item() / 2688.0) < 1e-12
+
+    g.add_batch(torch.randn(256, 128), None)
+    g.quantizer.begin_capture(32, 128)
+    g.fasterquant_blockwise(blocksize=32, percdamp=0.01)
+    art = g.quantizer.end_capture()
+
+    assert art.global_scale.item() == pytest.approx(s2)
+    assert torch.equal(dequantize_artifact(art), layer.weight.data.float())
+    # Normalized fp8 scales should sit high in the fp8 range, not subnormal
+    assert art.scales.to(torch.float32).max().item() > 64.0
+
+
 def test_capture_incomplete_coverage_raises():
     q = NVFP4Quantizer(block_size=16, device="cpu")
     q.begin_capture(4, 64)

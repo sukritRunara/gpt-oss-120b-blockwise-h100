@@ -5,6 +5,43 @@ without pointing to the test, log, or artifact that proves it.
 
 ---
 
+## 2026-07-16 10:05 UTC — P0.7 + P0.8 resolved: full-NVFP4 GPT-OSS proven loadable in vLLM
+
+**Status:** complete
+
+**Headline:** vLLM 0.25.1 serves W4A16_NVFP4 GPT-OSS **including the FusedMoE
+experts** (Marlin weight-only kernels). A tiny fixture built by the real pipeline
+(quantize → manifest → stage 7 pack) loads and generates on the H100:
+`FIXTURE_LOAD_OK` (`logs/serving/fixture_load_attempt4.log`).
+
+**What was built:**
+- `docs/VLLM_NVFP4_CONTRACT.md` — the full tensor contract (names, shapes, dtypes,
+  orientations, scale semantics, loader behavior) with file/line references into the
+  installed vLLM source.
+- D-010 (quantizer): ModelOpt global-scale convention — per-tensor
+  `amax/(6·448)` fp32 global fixed pre-GPTQ, fp8 block scales normalized by it,
+  shared across fused q/k/v. Artifacts/manifest/dequant/verify all carry it.
+- Stage 7: expert packing to the vLLM FusedMoE layout (per-expert transposed exact
+  codes/scales in HF orientation, per-expert scale_2, input-scale placeholders);
+  flat `group_size` + vLLM-prefix ignore names in config.json; per-layer fail-closed
+  hybrid policy.
+- `vllm-gptoss-nvfp4-plugin` (installed editable in .venv-serve): patches three
+  upstream gaps — no MoE bias params in ModelOptNvFp4FusedMoE.create_weights,
+  no bias/swigluoai constants in its Marlin quant config, and the
+  `".w13_weight" in name` loader branch crashing on 2-D scale_2 keys.
+- `scripts/build_nvfp4_fixture.py` + `scripts/fixture_load_test.py` — the proof
+  harness (attempts 1-3 in logs document each upstream failure in isolation).
+
+**Evidence:** 49 pytest tests green (incl. new global-scale round trip and expert
+packing layout assertions); stage/property scripts pass; fixture load log shows
+`quantization=modelopt_fp4` + Marlin FP4 linear & MoE kernel engagement.
+
+**Next:** Arm B dequantization script + validation; P0.9 benchmark harness; pilot.
+
+**Blockers:** none.
+
+---
+
 ## 2026-07-16 09:30 UTC — P0.5 + P0.6 resolved; official checkpoint downloaded (arm A)
 
 **Status:** complete

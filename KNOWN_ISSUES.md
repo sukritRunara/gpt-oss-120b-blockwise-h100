@@ -24,25 +24,6 @@ Hard-coded model paths in `test_vLLM_deploy_quantized_model.py:2,35`.
 Note stage7's `_CODE_ROOT` points at the repo root (not `opteam-blockwise-gptq/`) —
 the two path constants are inconsistent with each other as well.
 
-### 🟡 P0.7 — GPT-OSS experts not yet packed for vLLM (fail-open half FIXED)
-**Remaining:** batched expert slices (`experts.gate_up_proj [E,in,out]`) are captured,
-verified, and manifested per slice (P0.5/P0.6 done), but the vLLM expert packing
-layout is not implemented yet. Stage 7 now **refuses** to run when expert slices are
-present unless `--allow_hybrid` is passed, in which case the output is loudly labeled
-HYBRID (experts BF16, on the ignore list, BF16 byte-fraction reported) — the silent
-"full NVFP4 with BF16 experts" failure and the "pack all nn.Linear" fallback are gone.
-**Next:** read the pinned vLLM 0.25.1 GPT-OSS + ModelOpt loader source, document the
-expert tensor contract in `docs/VLLM_NVFP4_CONTRACT.md`, implement expert packing,
-prove with a small fixture load (P0.8).
-
-### 🔴 P0.8 — NVFP4 packing contract unverified against pinned vLLM
-**Evidence:** `weight_scale_2 = 1.0` hard-coded with an in-comment claim about Marlin
-W4A16 behavior ([stage7_save_modelopt.py:156-165](blockwise-gptq-main/tests/stage7_save_modelopt.py#L156-L165));
-`_compute_shared_scales` computes group scales then never uses them for packing.
-**Fix:** Inspect the pinned vLLM's ModelOpt/NVFP4 loader + kernel selection; write
-`docs/VLLM_NVFP4_CONTRACT.md` with file/line references; round-trip + minimal-load tests;
-capture server logs proving the selected kernel.
-
 ### 🔴 P0.9 — Benchmark is single-process, not a serving benchmark
 **Evidence:** TTFT = offline `llm.generate(max_tokens=1)` wall-clock averaged over a few
 repeats ([stage8_benchmark_nvfp4_vs_bf16.py:117-123](blockwise-gptq-main/tests/stage8_benchmark_nvfp4_vs_bf16.py#L117-L123));
@@ -68,6 +49,37 @@ no server, no concurrency, no async, no percentiles, no per-request records.
 ---
 
 ## Resolved
+
+### 🟢 P0.7 + P0.8 — Expert packing & vLLM contract (resolved 2026-07-16)
+**Verdict:** vLLM 0.25.1 supports W4A16_NVFP4 for BOTH GPT-OSS dense linears (FP4
+Marlin) and FusedMoE experts (Marlin MoE) — full-NVFP4 GPT-OSS is servable on H100.
+The complete tensor contract (names, shapes, dtypes, orientations, scale conventions)
+is documented with file/line references in `docs/VLLM_NVFP4_CONTRACT.md`, verified
+against the installed source.
+**What was fixed on our side:**
+- Stage 7 packs expert slices per layer into the FusedMoE checkpoint layout (HF
+  orientation, per-expert transposed exact codes/scales, per-expert `weight_scale_2`,
+  1.0 input-scale placeholders). Fail-closed: partially-quantized expert layers
+  refuse to pack without `--allow_hybrid`.
+- D-010: quantizer adopted the ModelOpt scale convention — per-tensor
+  `global_scale = amax/(6·448)` with fp8 block scales normalized by it (also fixes
+  fp8-subnormal precision loss), **shared across fused q/k/v** (vLLM applies
+  `max(weight_scale_2)` to the fused weight without rescaling groups).
+- config.json: `quant_algo`/`group_size`/`ignore` written flat (where vLLM reads
+  them); ignore names translated to vLLM prefixes.
+**Upstream gaps found (patched via `vllm-gptoss-nvfp4-plugin`, loaded through the
+`vllm.general_plugins` entry point in every vLLM process):**
+1. `ModelOptNvFp4FusedMoE.create_weights` registers no bias params although GPT-OSS
+   MoE has biases → KeyError at load.
+2. Its Marlin quant config carries neither the biases nor the swigluoai constants
+   (α=1.702, β=1.0, clamp=7.0) — experts would silently run plain SiLU without bias.
+3. `GptOssModel._load_weights_other` branches on the substring `".w13_weight"`, so
+   2-D `*_weight_scale_2` tensors would crash the 3-D permute path.
+**Proof:** tiny end-to-end fixture (real pipeline: quantize → manifest → stage7 pack
+→ vLLM load on H100): `quantization=modelopt_fp4`, Marlin FP4 kernels engaged for
+linear + MoE, generation ran — `FIXTURE_LOAD_OK`
+(`logs/serving/fixture_load_attempt4.log`; failures 1-3 documented in attempts 1-3).
+Numerical validation of served outputs happens at the pilot logit-comparison gate.
 
 ### 🟢 P0.5 — Stage 5 tensor manifest (resolved 2026-07-16)
 Was: Stage 5 JSON had only settings + total loss; Stage 7 expected fields that never

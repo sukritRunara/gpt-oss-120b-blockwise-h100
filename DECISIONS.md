@@ -152,7 +152,39 @@ design).
 
 ---
 
+## D-010 — ModelOpt scale convention: per-tensor global scale, normalized fp8 blocks
+
+**Decision:** NVFP4 quantization uses `global_scale = amax(tensor)/(6·448)` (fp32,
+fixed from the ORIGINAL weights before GPTQ), fp8 block scales stored as
+`raw_block_scale / global_scale`, dequant = `code × fp8 × global`. Fused q/k/v share
+one global scale (max of their amaxes).
+
+**Why:** (1) It is the exact form vLLM's Marlin W4A16 kernel consumes
+(`weight_scale_2`); vLLM applies `max(weight_scale_2)` across fused q/k/v WITHOUT
+rescaling fp8 groups, so unshared globals would corrupt the fused dequantization.
+(2) Quality: unnormalized block scales for typical bf16 weights sit in fp8-e4m3's
+coarse subnormal range; normalization moves them near 448 (full precision).
+Legacy behavior (global=1.0) remains when no global scale is set, keeping the
+existing test corpus valid.
+
+---
+
+## D-011 — Upstream vLLM gaps patched via a first-class plugin, not a fork
+
+**Decision:** Three vLLM 0.25.1 gaps for GPT-OSS + ModelOpt NVFP4 (missing MoE bias
+params, missing bias/swiglu constants in the Marlin quant config, loader crash on
+2-D scale_2 keys) are fixed by `vllm-gptoss-nvfp4-plugin` — an editable package
+exposing a `vllm.general_plugins` entry point, so the patches load in every vLLM
+process including the V1 engine-core subprocess.
+
+**Why:** Monkeypatching in the parent process cannot reach the engine subprocess;
+editing installed site-packages would be invisible, unversioned state. The plugin is
+committed, versioned, self-documenting, applies only to the affected classes, and is
+a no-op for other models/checkpoints. All three gaps are upstream-issue candidates
+(documented with line numbers in docs/VLLM_NVFP4_CONTRACT.md §6).
+
+---
+
 <!-- Pending decisions to record as work proceeds (handoff §9):
-  - Which vLLM version and NVFP4 contract were pinned.
   - Whether mixed-precision BF16 fallback is retained, and which tensors are excluded.
 -->

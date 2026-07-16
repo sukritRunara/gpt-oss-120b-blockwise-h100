@@ -1,0 +1,15 @@
+[project]
+name = "vllm-gptoss-nvfp4"
+version = "0.1.0"
+description = "vLLM 0.25.1 patches to serve GPT-OSS ModelOpt W4A16_NVFP4 checkpoints (biases + swigluoai constants + scale_2 loader fix)"
+requires-python = ">=3.10"
+
+[project.entry-points."vllm.general_plugins"]
+gptoss_nvfp4 = "vllm_gptoss_nvfp4:register"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["vllm_gptoss_nvfp4*"]

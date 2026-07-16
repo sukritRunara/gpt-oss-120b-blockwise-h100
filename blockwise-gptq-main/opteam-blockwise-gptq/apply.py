@@ -85,6 +85,8 @@ def _rtn_quantize(linear, quant_format, device, group_size=128,
     quantizer = _make_quantizer(quant_format, device, group_size=group_size,
                                 nvfp4_block_size=nvfp4_block_size)
     W = linear.weight.data.float()
+    if hasattr(quantizer, "set_global_scale_from"):        # D-010, nvfp4
+        quantizer.set_global_scale_from(W)
     quantizer.find_params(W)
     linear.weight.data = quantizer.quantize_dequantize(W).to(linear.weight.dtype)
     return quantizer
@@ -692,6 +694,24 @@ def _run_parallel(
             g.H = entry["H"].to(device)
             g.nsamples = entry["nsamples"]
             gptq_map[name] = g
+
+        # ── Per-tensor global scales (D-010), fixed BEFORE quantization ───────
+        # vLLM fuses q/k/v into one GEMM and applies max(weight_scale_2)
+        # WITHOUT rescaling the fp8 group scales, so q/k/v must share one
+        # global scale or the fused dequantization drifts.
+        if quant_format == "nvfp4":
+            qkv = [n for n in gptq_map
+                   if n.rsplit(".", 1)[-1] in ("q_proj", "k_proj", "v_proj")]
+            shared = None
+            if qkv:
+                amax = max(subset[n].weight.detach().abs().amax().item()
+                           for n in qkv)
+                shared = amax / (6.0 * 448.0)
+            for name, g in gptq_map.items():
+                if name in qkv:
+                    g.quantizer.set_global_scale(shared)
+                else:
+                    g.quantizer.set_global_scale_from(subset[name].weight)
 
         acc_state = None
         if has_experts:

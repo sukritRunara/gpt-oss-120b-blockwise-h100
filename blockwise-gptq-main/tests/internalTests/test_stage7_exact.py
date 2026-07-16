@@ -115,15 +115,9 @@ def test_refuses_without_manifest():
                 f["model_dir"] / "quant_artifacts" / "nope.json")
 
 
-def test_refuses_experts_without_allow_hybrid():
-    f = _gptoss_fixture()
-    with tempfile.TemporaryDirectory() as out:
-        with pytest.raises(RuntimeError, match="expert slices"):
-            stage7.pack_from_manifest(f["model_dir"], Path(out), f["manifest"],
-                                      allow_hybrid=False)
-
-
-def test_hybrid_pack_is_exact_and_labeled():
+def test_full_pack_includes_experts():
+    """No fallbacks → experts pack to the vLLM FusedMoE layout (contract §4),
+    linears carry ModelOpt global scales, output is NOT hybrid."""
     f = _gptoss_fixture()
     from quant_artifacts import load_artifact
     art_dir = f["manifest"].parent
@@ -131,12 +125,14 @@ def test_hybrid_pack_is_exact_and_labeled():
     with tempfile.TemporaryDirectory() as out:
         out = Path(out)
         report = stage7.pack_from_manifest(f["model_dir"], out, f["manifest"],
-                                           allow_hybrid=True)
-        assert report["hybrid"] is True
+                                           allow_hybrid=False)
+        assert report["hybrid"] is False
         assert report["counts"]["verified"] == len(f["records"])
+        assert report["counts"]["experts_packed"] > 0
 
         packed = stage7.load_qdq_state_dict(out)
 
+        # Linears: exact codes/scales + fp32 ModelOpt global scale
         for r in f["records"]:
             if r["kind"] != "linear":
                 continue
@@ -149,20 +145,86 @@ def test_hybrid_pack_is_exact_and_labeled():
             assert s.dtype == torch.float8_e4m3fn
             assert torch.equal(s.to(torch.float32),
                                art.scales.to(torch.float32))
-            assert s2.dtype == torch.bfloat16 and s2.item() == 1.0
+            assert s2.dtype == torch.float32
+            assert torch.equal(s2, art.global_scale.to(torch.float32))
 
-        # Expert tensors stayed unquantized (the fixture model is fp32; the
-        # real 20B is bf16 — either way, NOT packed uint8) and are ignored
-        expert_params = {r["param"] for r in f["records"]
-                         if r["kind"] == "expert_slice"}
-        for pname in expert_params:
-            assert packed[pname].dtype in (torch.float32, torch.bfloat16)
+        # q/k/v share one global scale (vLLM fuses them; max() is applied
+        # without rescaling fp8 groups — contract §3)
+        for li in range(N_LAYERS):
+            prefix = f"model.layers.{li}.self_attn"
+            s2s = [packed[f"{prefix}.{p}.weight_scale_2"].item()
+                   for p in ("q_proj", "k_proj", "v_proj")]
+            assert s2s[0] == s2s[1] == s2s[2], f"layer {li} qkv scale_2 differ"
+
+        # Experts: FusedMoE layout, HF orientation, transposed exact codes
+        by_layer = {}
+        for r in f["records"]:
+            if r["kind"] == "expert_slice":
+                by_layer.setdefault(r["layer_index"], {}).setdefault(
+                    r["projection"], {})[r["expert_index"]] = r
+        for li, sides in by_layer.items():
+            prefix = f"model.layers.{li}.mlp.experts"
+            assert f"{prefix}.gate_up_proj" not in packed
+            assert f"{prefix}.down_proj" not in packed
+            n_exp = len(sides["gate_up"])
+
+            w13 = packed[f"{prefix}.w13_weight"]
+            s13 = packed[f"{prefix}.w13_weight_scale"]
+            g13 = packed[f"{prefix}.w13_weight_scale_2"]
+            i13 = packed[f"{prefix}.w13_input_scale"]
+            assert w13.dtype == torch.uint8 and w13.shape[0] == n_exp
+            assert s13.dtype == torch.float8_e4m3fn
+            assert g13.dtype == torch.float32 and g13.shape == (n_exp, 2)
+            assert torch.equal(g13[:, 0], g13[:, 1])
+            assert torch.all(i13 == 1.0)
+
+            for e in range(n_exp):
+                r = sides["gate_up"][e]
+                art = load_artifact(art_dir, r["artifact"]["file"], r["name"],
+                                    e, r["scale_block_size"], r["orig_shape"])
+                assert torch.equal(w13[e], art.codes.T)
+                assert torch.equal(s13[e].to(torch.float32),
+                                   art.scales.T.to(torch.float32))
+                assert g13[e, 0] == art.global_scale.item()
+
+            w2 = packed[f"{prefix}.w2_weight"]
+            g2 = packed[f"{prefix}.w2_weight_scale_2"]
+            assert w2.dtype == torch.uint8 and w2.shape[0] == n_exp
+            assert g2.shape == (n_exp,)
+            for e in range(n_exp):
+                r = sides["down"][e]
+                art = load_artifact(art_dir, r["artifact"]["file"], r["name"],
+                                    e, r["scale_block_size"], r["orig_shape"])
+                assert torch.equal(w2[e], art.codes.T)
 
         cfg = json.loads((out / "config.json").read_text())
-        ignore = cfg["quantization_config"]["ignore"]
-        assert "lm_head" in ignore
-        assert any("experts" in n for n in ignore)
+        qc = cfg["quantization_config"]
+        assert qc["quant_algo"] == "W4A16_NVFP4"
+        assert qc["group_size"] == 16            # flat, where vLLM reads it
+        assert qc["ignore"] == ["lm_head"]       # experts are packed, not ignored
         assert (out / "PACKING_REPORT.json").exists()
+
+
+def test_expert_fallback_refused_without_hybrid_flag():
+    """Force expert BF16 fallbacks via a tiny threshold: packing must refuse
+    without --allow_hybrid and label HYBRID with it."""
+    with tempfile.TemporaryDirectory() as work:
+        model_dir, manifest, records = _quantize_and_save(
+            _tiny_gpt_oss(), work, threshold=1e-9)
+        assert any(r["kind"] == "expert_slice"
+                   and r["disposition"] == "BF16_FALLBACK" for r in records)
+
+        out = Path(work) / "packed"
+        with pytest.raises(RuntimeError, match="not NVFP4"):
+            stage7.pack_from_manifest(model_dir, out, manifest,
+                                      allow_hybrid=False)
+
+        report = stage7.pack_from_manifest(model_dir, out, manifest,
+                                           allow_hybrid=True)
+        assert report["hybrid"] is True
+        cfg = json.loads((out / "config.json").read_text())
+        assert any(".mlp.experts" in n
+                   for n in cfg["quantization_config"]["ignore"])
 
 
 def test_tampered_artifact_aborts_pack():
