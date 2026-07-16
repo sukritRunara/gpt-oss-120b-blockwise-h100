@@ -36,5 +36,8 @@ env.sh
 *.env
 .env
 
+# Local Claude Code settings (personal, not shared)
+.claude/settings.local.json
+
 # OS junk
 .DS_Store
