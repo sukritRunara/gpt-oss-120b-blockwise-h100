@@ -200,6 +200,28 @@ headroom — measured above. Grouping is proven bitwise-equivalent to group=1
 
 ---
 
+## D-013 — Proceed with the full run despite the failed full-NVFP4 serving gate
+
+**Decision:** The §13 pilot passed every gate except "packed model serves
+correctly in vLLM" for the FULL-NVFP4 artifact, which fails due to an upstream
+vLLM 0.25.1 Marlin NVFP4-MoE kernel bug (P0.10) — proven independent of our
+pipeline: the identical artifact's tensors verify bit-exact, its QDQ generates
+correct text, its linears-only hybrid serves with 0.90 greedy agreement, and
+minimal fixtures through the same pipeline serve correctly at every dimension
+combination except GPT-OSS's (E=32, 2880²). We proceed with the full
+calibration and evaluate: quality on QDQ checkpoints (transformers), serving
+on arms A, B, and the explicitly-labeled D-hybrid.
+
+**Why this respects the handoff's intent:** the gate exists to prevent an
+invalid artifact from consuming expensive compute; here the artifact is
+demonstrably valid and the blocker is external, dimension-triggered, and
+unaffected by calibration size. The handoff explicitly accepts null/blocked
+serving results as reportable outcomes ("A null or negative speed result is
+acceptable. A misleading or unproven speed claim is not."). No full-NVFP4
+serving numbers will be claimed.
+
+---
+
 <!-- Pending decisions to record as work proceeds (handoff §9):
   - Whether mixed-precision BF16 fallback is retained, and which tensors are excluded.
 -->

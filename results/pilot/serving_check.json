@@ -1,0 +1,17 @@
+{
+  "deterministic": true,
+  "greedy64_prefix_agreement_mean": 0.0,
+  "greedy64_prefix_agreement_per_prompt": [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "harmony_chat_ok": true,
+  "harmony_chat_sample": "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+  "gate_pass": false
+}

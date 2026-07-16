@@ -24,6 +24,15 @@ P3  GptOssModel._load_weights_other branches on the SUBSTRING
     the generic path would handle but we keep symmetric) directly into their
     parameters before the branchy loop. TP=1 / EP=1 only — asserted.
 
+P4  prepare_nvfp4_moe_layer_for_marlin pads the per-shard intermediate size
+    to Marlin tiles (2880 → 2944 for gpt-oss) and marlin-permutes weights
+    and scales — but never touches the biases (the mxfp4 marlin prep does:
+    marlin_utils_fp4.prepare_moe_mxfp4_layer_for_marlin permute_bias). The
+    Marlin MoE kernel then asserts `b_bias.size(1) != size_n` and aborts.
+    After the stock process_weights_after_loading, convert the biases to
+    kernel format: pad w13_bias per gate/up shard to padded_N (mirroring
+    pad_w13's row layout) and marlin_permute_bias both biases per expert.
+
 All patches are no-ops for non-GPT-OSS models and non-NVFP4 checkpoints.
 """
 
@@ -152,12 +161,103 @@ def _patch_gptoss_loader():
     GptOssModel._load_weights_other = _load_weights_other
 
 
+def _patch_bias_kernel_format():
+    import torch
+    from vllm.model_executor.layers.fused_moe.oracle.nvfp4 import NvFp4MoeBackend
+    from vllm.model_executor.layers.quantization.modelopt import (
+        ModelOptNvFp4FusedMoE,
+    )
+    from vllm.model_executor.layers.quantization.utils.marlin_utils import (
+        marlin_permute_bias,
+    )
+
+    orig = ModelOptNvFp4FusedMoE.process_weights_after_loading
+
+    def process_weights_after_loading(self, layer):
+        # P4/P5: run BEFORE the stock method — it builds the quant config and
+        # the modular kernel at its end (modelopt.py:1600+), so the layer must
+        # already be in a Marlin-consistent layout.
+        #
+        # Marlin's NVFP4 MoE prep (prepare_nvfp4_moe_layer_for_marlin) pads
+        # each gate/up shard to Marlin tiles by VIEWING w13 as
+        # (E, 2, N, cols) — i.e. it assumes gate rows 0..N-1 and up rows
+        # N..2N-1 (CONCATENATED). GPT-OSS checkpoints (and the HF/vLLM BF16
+        # path) INTERLEAVE gate/up rows. With gpt-oss dims (N=2880, K=2880:
+        # K%128!=0 → padded_N=2944) the interleaved rows get scrambled by the
+        # shard-view pad and the activation misreads pairs → garbage output.
+        # Fix: de-interleave w13 rows (weights, scales, bias) to the
+        # concatenated layout and switch the activation to
+        # SWIGLUOAI_UNINTERLEAVE (identical math on concatenated halves).
+        # Additionally pad + marlin-permute the biases, which the NVFP4 prep
+        # never handles (the mxfp4 prep does — marlin_utils_fp4.py
+        # permute_bias) — the kernel otherwise asserts b_bias.size(1)!=size_n.
+        if (getattr(layer, "w13_bias", None) is not None
+                and self.nvfp4_backend == NvFp4MoeBackend.MARLIN):
+            import os
+
+            from vllm.model_executor.layers.fused_moe.activation import (
+                MoEActivation,
+            )
+
+            # Debug knobs for contract bisection (default = current best
+            # understanding; see docs/VLLM_NVFP4_CONTRACT.md §6).
+            deint_on = os.environ.get("GPTOSS_NVFP4_DEINT", "1") == "1"
+            bias_permute_on = os.environ.get(
+                "GPTOSS_NVFP4_BIAS_PERMUTE", "1") == "1"
+
+            E = layer.num_experts
+            N = layer.intermediate_size_per_partition
+            K = layer.hidden_size
+
+            w13_bias = layer.w13_bias.data
+            w2_bias = layer.w2_bias.data
+
+            if deint_on:
+                # interleaved (g0,u0,g1,u1,…) → concatenated ([g…; u…])
+                deint = torch.cat([torch.arange(0, 2 * N, 2),
+                                   torch.arange(1, 2 * N, 2)])
+                for pname in ("w13_weight", "w13_weight_scale"):
+                    p = getattr(layer, pname)
+                    idx = deint.to(p.data.device)
+                    p.data.copy_(p.data.index_select(1, idx))
+                w13_bias = w13_bias.index_select(
+                    1, deint.to(w13_bias.device))
+                layer.activation = MoEActivation.SWIGLUOAI_UNINTERLEAVE
+
+            def round_up(x, m):
+                return (x + m - 1) // m * m
+
+            padded_N = round_up(N, 64) if K % 128 == 0 else round_up(N, 128)
+            if padded_N != N:
+                b = w13_bias.view(E, 2, N)
+                b = torch.nn.functional.pad(b, (0, padded_N - N))
+                w13_bias = b.reshape(E, 2 * padded_N)
+            if bias_permute_on:
+                w13_bias = torch.stack(
+                    [marlin_permute_bias(w13_bias[e]) for e in range(E)])
+                w2_bias = torch.stack(
+                    [marlin_permute_bias(w2_bias[e]) for e in range(E)])
+
+            layer.w13_bias = torch.nn.Parameter(w13_bias.contiguous(),
+                                                requires_grad=False)
+            layer.w2_bias = torch.nn.Parameter(w2_bias.contiguous(),
+                                               requires_grad=False)
+            logger.info("[gptoss-nvfp4] MoE prep: deint=%s bias_permute=%s "
+                        "N %d → %d", deint_on, bias_permute_on, N, padded_N)
+
+        orig(self, layer)
+
+    ModelOptNvFp4FusedMoE.process_weights_after_loading = \
+        process_weights_after_loading
+
+
 def register():
     """vllm.general_plugins entry point — runs in every vLLM process."""
     try:
         _patch_create_weights()
         _patch_quant_config()
         _patch_gptoss_loader()
+        _patch_bias_kernel_format()
         logger.info("[gptoss-nvfp4] vLLM GPT-OSS NVFP4 patches applied")
     except Exception:                                     # noqa: BLE001
         logger.exception("[gptoss-nvfp4] failed to apply patches")

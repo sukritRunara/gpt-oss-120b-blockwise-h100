@@ -14,6 +14,33 @@ current pipeline is invalid for the experiment.
 
 ## Open
 
+### 🔴 P0.10 — vLLM 0.25.1 Marlin NVFP4-MoE numerically corrupt at GPT-OSS scale (UPSTREAM)
+**Symptom:** full-NVFP4 GPT-OSS packs load and run, but MoE outputs explode to
+~1e33 (≈ the 2^119-processed `weight_scale_2` leaking through unscaled) →
+downstream overflow → uniform logits → token-0 spam. Deterministic.
+**Isolation (all evidence under `logs/quantization/pilot_serving_*` and
+`results/pilot/fx_*`):**
+- Linears-only hybrid pack of the SAME artifact passes the serving gate
+  (greedy agreement 0.90 vs QDQ, coherent Harmony chat) → dense W4A16 Marlin
+  path is correct; our checkpoint is correct (all tensors bit-exact-verified).
+- Tiny fixtures through the identical pipeline all agree numerically with
+  their QDQ references: (E8,256²), (E8,288→320 pad), (E8,K192), (E8,2880²),
+  (E32,256²), (E32,1024²) — including exact 24/24 greedy matches.
+- Failing: (E32, 2880²) — real weights AND random weights (values ruled out);
+  block_size_m 8 vs 64 ruled out; scale re-normalization (fp8 halved +
+  global doubled) ruled out.
+- Repro checkpoints kept: `models/fixture-real2l-packed` (fails),
+  `models/fixture-e8big` / `fixture-e32mid` (pass).
+**Workarounds attempted:** `moe_backend=emulation` → rejected ("kernel does
+not support bias"; also W4A4-only, would need real input scales);
+`moe_backend=humming` → its NVRTC JIT fails in this container; no newer vLLM
+exists (0.25.1 is latest on PyPI).
+**Consequences & decision (D-013):** quality science (B/C/D) proceeds on QDQ
+checkpoints in transformers; serving benchmarks run arms A (native MXFP4),
+B (BF16), and the explicitly-labeled D-hybrid (linears NVFP4 + experts BF16,
+gate-passing). Full-NVFP4 expert serving on this stack is reported as
+blocked-by-upstream with repros. Upstream issue candidate with fixtures.
+
 ### 🔴 P0.1 — Hard-coded DGX paths break every entry point
 **Evidence:** `_CODE_ROOT = Path("/home/runara_dgx_spark_1/Itamar/projects/...")` with a
 `RuntimeError` guard in 10 files (all `tests/stage*.py`, all `tests/internalTests/*.py`,

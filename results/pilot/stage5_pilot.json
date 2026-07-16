@@ -1,0 +1,19 @@
+{
+  "stage": "5_quantize",
+  "model": "gpt-oss-20b-mxfp4-dequant-bf16",
+  "model_path": "/workspace/models/gpt-oss-20b-mxfp4-dequant-bf16",
+  "output_dir": "/workspace/models/pilot-gptq-nvfp4",
+  "quant_format": "nvfp4",
+  "dataset": "c4",
+  "n_calib": 32,
+  "seq_len": 512,
+  "blocksize": 128,
+  "percdamp": 0.01,
+  "parallel_hessian": true,
+  "mixed_precision_threshold": null,
+  "total_gptq_loss": 525795.377194,
+  "quant_time_s": 1601.6,
+  "blocksize_sweep": null,
+  "manifest": "/workspace/models/pilot-gptq-nvfp4/quant_artifacts/manifest.json",
+  "timestamp": "2026-07-16T10:52:32.124179+00:00"
+}
