@@ -1,12 +1,17 @@
-# UPSTREAM ISSUE — READY TO FILE (blocked only on token scope)
+# UPSTREAM ISSUE — READY TO FILE (paste into browser)
 
-Target: https://github.com/vllm-project/vllm/issues/new (Bug Report template)
+Target: https://github.com/vllm-project/vllm/issues/new/choose → "🐛 Bug Report"
 
-**Status 2026-07-17:** body finalized below (verbatim); repro validated on this pod;
-kernel confirmed byte-identical v0.25.1 ↔ main; duplicate search clean (#46641 is the
-FlashInfer/Blackwell path, distinct). Filing FAILED with the session's fine-grained PAT
-(cannot create issues on repos it isn't granted). To file: paste title+body below in the
-browser, or supply a classic PAT with public_repo scope.
+**Why not filed via API:** the session PAT is a *fine-grained* token, which GitHub
+restricts to the owner's own repos — it cannot create issues on `vllm-project/vllm`
+(confirmed: same token pushes to this repo fine, POST to vllm-project returns
+"Resource not accessible by personal access token"). A classic PAT with `public_repo`
+would work via API; otherwise paste the two sections below in the browser.
+
+Environment section captured 2026-07-17 from `collect_env.py` in .venv-serve;
+repro validated (117/128 rows bad → 0/128 on flag flip); kernel byte-identical v0.25.1↔main.
+
+---
 
 ## Title
 
@@ -18,9 +23,171 @@ browser, or supply a classic PAT with public_repo scope.
 
 ### Your current environment
 
-- vLLM **0.25.1** (pip wheel), 1× **H100 80GB (SM90)**, torch 2.9.0, CUDA 12.8, Python 3.12
-- The affected kernel source (`csrc/libtorch_stable/moe/marlin_moe_wna16/marlin_template.h`) is **byte-identical between v0.25.1 and current `main`**, so this should still reproduce on main.
-- Model: `openai/gpt-oss-20b` requantized to ModelOpt-style **NVFP4 W4A16** (`quant_algo: NVFP4`, group 16), served on Hopper via the Marlin FP4 MoE fallback (`fused_marlin_moe` → `ops.moe_wna16_marlin_gemm`). MoE dims: E=32 experts, top_k=4, hidden=2880, intermediate=2880.
+<details>
+<summary>The output of <code>python collect_env.py</code></summary>
+
+```text
+Collecting environment information...
+uv is set
+==============================
+        System Info
+==============================
+OS                           : Ubuntu 24.04.3 LTS (x86_64)
+GCC version                  : (Ubuntu 13.3.0-6ubuntu2~24.04) 13.3.0
+Clang version                : Could not collect
+CMake version                : version 3.28.3
+Libc version                 : glibc-2.39
+
+==============================
+       PyTorch Info
+==============================
+PyTorch version              : 2.11.0+cu130
+Is debug build               : False
+CUDA used to build PyTorch   : 13.0
+ROCM used to build PyTorch   : N/A
+XPU used to build PyTorch    : N/A
+
+==============================
+      Python Environment
+==============================
+Python version               : 3.12.3 (main, Aug 14 2025, 17:47:21) [GCC 13.3.0] (64-bit runtime)
+Python platform              : Linux-6.8.0-90-generic-x86_64-with-glibc2.39
+    
+==============================
+       CUDA / GPU Info
+==============================
+Is CUDA available            : True
+CUDA runtime version         : 12.8.93
+CUDA_MODULE_LOADING set to   : 
+GPU models and configuration : GPU 0: NVIDIA H100 80GB HBM3
+Nvidia driver version        : 580.126.09
+cuDNN version                : Probably one of the following:
+/usr/lib/x86_64-linux-gnu/libcudnn.so.9.8.0
+/usr/lib/x86_64-linux-gnu/libcudnn_adv.so.9.8.0
+/usr/lib/x86_64-linux-gnu/libcudnn_cnn.so.9.8.0
+/usr/lib/x86_64-linux-gnu/libcudnn_engines_precompiled.so.9.8.0
+/usr/lib/x86_64-linux-gnu/libcudnn_engines_runtime_compiled.so.9.8.0
+/usr/lib/x86_64-linux-gnu/libcudnn_graph.so.9.8.0
+/usr/lib/x86_64-linux-gnu/libcudnn_heuristic.so.9.8.0
+/usr/lib/x86_64-linux-gnu/libcudnn_ops.so.9.8.0
+HIP runtime version          : N/A
+MIOpen runtime version       : N/A
+Is XNNPACK available         : True
+
+==============================
+          CPU Info
+==============================
+Architecture:                         x86_64
+CPU op-mode(s):                       32-bit, 64-bit
+Address sizes:                        46 bits physical, 57 bits virtual
+Byte Order:                           Little Endian
+CPU(s):                               208
+On-line CPU(s) list:                  0-207
+Vendor ID:                            GenuineIntel
+Model name:                           Intel(R) Xeon(R) Platinum 8470
+CPU family:                           6
+Model:                                143
+Thread(s) per core:                   2
+Core(s) per socket:                   52
+Socket(s):                            2
+Stepping:                             8
+CPU(s) scaling MHz:                   29%
+CPU max MHz:                          3800.0000
+CPU min MHz:                          800.0000
+BogoMIPS:                             4000.00
+Flags:                                <omitted>
+Virtualization:                       VT-x
+L1d cache:                            4.9 MiB (104 instances)
+L1i cache:                            3.3 MiB (104 instances)
+L2 cache:                             208 MiB (104 instances)
+L3 cache:                             210 MiB (2 instances)
+NUMA node(s):                         2
+NUMA node0 CPU(s):                    0-51,104-155
+NUMA node1 CPU(s):                    52-103,156-207
+Vulnerability Gather data sampling:   Not affected
+Vulnerability Itlb multihit:          Not affected
+Vulnerability L1tf:                   Not affected
+Vulnerability Mds:                    Not affected
+Vulnerability Meltdown:               Not affected
+Vulnerability Mmio stale data:        Not affected
+Vulnerability Reg file data sampling: Not affected
+Vulnerability Retbleed:               Not affected
+Vulnerability Spec rstack overflow:   Not affected
+Vulnerability Spec store bypass:      Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerability Spectre v1:             Mitigation; usercopy/swapgs barriers and __user pointer sanitization
+Vulnerability Spectre v2:             Mitigation; Enhanced / Automatic IBRS; IBPB conditional; RSB filling; PBRSB-eIBRS SW sequence; BHI BHI_DIS_S
+Vulnerability Srbds:                  Not affected
+Vulnerability Tsx async abort:        Not affected
+Vulnerability Vmscape:                Mitigation; IBPB before exit to userspace
+
+==============================
+Versions of relevant libraries
+==============================
+[pip3] flashinfer-python==0.6.13
+[pip3] numpy==2.3.5
+[pip3] nvidia-cublas==13.1.0.3
+[pip3] nvidia-cuda-cccl==13.3.3.4.1
+[pip3] nvidia-cuda-crt==13.3.73
+[pip3] nvidia-cuda-cupti==13.0.85
+[pip3] nvidia-cuda-nvcc==13.2.78
+[pip3] nvidia-cuda-nvrtc==13.0.88
+[pip3] nvidia-cuda-runtime==13.0.96
+[pip3] nvidia-cuda-tileiras==13.2.78
+[pip3] nvidia-cudnn-cu13==9.19.0.56
+[pip3] nvidia-cudnn-frontend==1.26.0
+[pip3] nvidia-cufft==12.0.0.61
+[pip3] nvidia-cufile==1.15.1.6
+[pip3] nvidia-curand==10.4.0.35
+[pip3] nvidia-cusolver==12.0.4.66
+[pip3] nvidia-cusparse==12.6.3.3
+[pip3] nvidia-cusparselt-cu13==0.8.0
+[pip3] nvidia-cutlass-dsl==4.5.2
+[pip3] nvidia-cutlass-dsl-libs-base==4.5.2
+[pip3] nvidia-cutlass-dsl-libs-cu13==4.5.2
+[pip3] nvidia-ml-py==13.610.43
+[pip3] nvidia-nccl-cu13==2.28.9
+[pip3] nvidia-nvjitlink==13.0.88
+[pip3] nvidia-nvshmem-cu13==3.4.5
+[pip3] nvidia-nvtx==13.0.85
+[pip3] nvidia-nvvm==13.2.78
+[pip3] pyzmq==27.1.0
+[pip3] tokenspeed-triton==3.8.10.post20260709
+[pip3] torch==2.11.0
+[pip3] torch-c-dlpack-ext==0.1.5
+[pip3] torchaudio==2.11.0
+[pip3] torchcodec==0.15.0
+[pip3] torchvision==0.26.0
+[pip3] transformers==5.14.0
+[pip3] triton==3.6.0
+[conda] Could not collect
+
+==============================
+         vLLM Info
+==============================
+ROCM Version                 : Could not collect
+vLLM Version                 : 0.25.1
+vLLM Build Flags:
+  CUDA Archs: Not Set; ROCm: Disabled; XPU: Disabled
+GPU Topology:                         <omitted>
+==============================
+     Environment Variables
+==============================
+NVIDIA_VISIBLE_DEVICES=void
+NVIDIA_REQUIRE_CUDA=cuda>=12.8 brand=unknown,driver>=470,driver<471 brand=grid,driver>=470,driver<471 brand=tesla,driver>=470,driver<471 brand=nvidia,driver>=470,driver<471 brand=quadro,driver>=470,driver<471 brand=quadrortx,driver>=470,driver<471 brand=nvidiartx,driver>=470,driver<471 brand=vapps,driver>=470,driver<471 brand=vpc,driver>=470,driver<471 brand=vcs,driver>=470,driver<471 brand=vws,driver>=470,driver<471 brand=cloudgaming,driver>=470,driver<471 brand=unknown,driver>=535,driver<536 brand=grid,driver>=535,driver<536 brand=tesla,driver>=535,driver<536 brand=nvidia,driver>=535,driver<536 brand=quadro,driver>=535,driver<536 brand=quadrortx,driver>=535,driver<536 brand=nvidiartx,driver>=535,driver<536 brand=vapps,driver>=535,driver<536 brand=vpc,driver>=535,driver<536 brand=vcs,driver>=535,driver<536 brand=vws,driver>=535,driver<536 brand=cloudgaming,driver>=535,driver<536 brand=unknown,driver>=550,driver<551 brand=grid,driver>=550,driver<551 brand=tesla,driver>=550,driver<551 brand=nvidia,driver>=550,driver<551 brand=quadro,driver>=550,driver<551 brand=quadrortx,driver>=550,driver<551 brand=nvidiartx,driver>=550,driver<551 brand=vapps,driver>=550,driver<551 brand=vpc,driver>=550,driver<551 brand=vcs,driver>=550,driver<551 brand=vws,driver>=550,driver<551 brand=cloudgaming,driver>=550,driver<551 brand=unknown,driver>=560,driver<561 brand=grid,driver>=560,driver<561 brand=tesla,driver>=560,driver<561 brand=nvidia,driver>=560,driver<561 brand=quadro,driver>=560,driver<561 brand=quadrortx,driver>=560,driver<561 brand=nvidiartx,driver>=560,driver<561 brand=vapps,driver>=560,driver<561 brand=vpc,driver>=560,driver<561 brand=vcs,driver>=560,driver<561 brand=vws,driver>=560,driver<561 brand=cloudgaming,driver>=560,driver<561 brand=unknown,driver>=565,driver<566 brand=grid,driver>=565,driver<566 brand=tesla,driver>=565,driver<566 brand=nvidia,driver>=565,driver<566 brand=quadro,driver>=565,driver<566 brand=quadrortx,driver>=565,driver<566 brand=nvidiartx,driver>=565,driver<566 brand=vapps,driver>=565,driver<566 brand=vpc,driver>=565,driver<566 brand=vcs,driver>=565,driver<566 brand=vws,driver>=565,driver<566 brand=cloudgaming,driver>=565,driver<566
+NCCL_VERSION=2.25.1-1
+NVIDIA_DRIVER_CAPABILITIES=compute,display,graphics,utility,video
+NVIDIA_PRODUCT_NAME=CUDA
+CUDA_VERSION=12.8.1
+LD_LIBRARY_PATH=/usr/local/cuda/lib64
+NVIDIA_CTK_LIBCUDA_DIR=/usr/lib/x86_64-linux-gnu
+PYTORCH_NVML_BASED_CUDA_CHECK=1
+TORCHINDUCTOR_COMPILE_THREADS=1
+TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor_root
+```
+
+</details>
+
+**Key facts:** vLLM **0.25.1**, 1× **H100 80GB (SM90)**, torch 2.11.0+cu130, CUDA runtime 12.8. The affected kernel source (`csrc/libtorch_stable/moe/marlin_moe_wna16/marlin_template.h`) is **byte-identical between v0.25.1 and current `main`** (verified 2026-07-17), so this should still reproduce on main. Model: `openai/gpt-oss-20b` requantized to ModelOpt-style **NVFP4 W4A16** (`quant_algo: NVFP4`, group 16), served on Hopper via the Marlin FP4 MoE fallback (`fused_marlin_moe` → `ops.moe_wna16_marlin_gemm`). MoE dims: E=32 experts, top_k=4, hidden=2880, intermediate=2880.
 
 ### 🐛 Describe the bug
 
